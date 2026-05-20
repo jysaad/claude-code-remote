@@ -86,7 +86,7 @@ while $KEEP_RUNNING; do
         --port 7681 \
         --interface "$TAILSCALE_IP" \
         --writable \
-        -t fontSize=10 \
+        -t fontSize=12 \
         -t lineHeight=1.1 \
         -t cursorBlink=true \
         -t cursorStyle=block \

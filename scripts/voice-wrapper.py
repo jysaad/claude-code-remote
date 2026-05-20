@@ -310,6 +310,12 @@ async def index():
             cursor: pointer;
             padding: 0 4px;
         }}
+        .drawer-hint {{
+            font-weight: normal;
+            font-size: 11px;
+            color: #777;
+            margin-left: 8px;
+        }}
         .new-session-btn {{
             margin: 12px 16px 6px;
             padding: 12px;
@@ -387,7 +393,7 @@ async def index():
     <div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDrawer()"></div>
     <div class="drawer" id="drawer">
         <div class="drawer-header">
-            <span>Sessions</span>
+            <span>Sessions <span class="drawer-hint">hold to rename</span></span>
             <button class="close-x" onclick="closeDrawer()">&times;</button>
         </div>
         <button class="new-session-btn" onclick="promptNewSession(false)">+ New session</button>
@@ -557,7 +563,29 @@ async def index():
                         <span class="name">${{escapeHtml(w.name)}}</span>
                         <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
                     `;
+                    let pressTimer = null;
+                    let longPressFired = false;
+                    const startPress = () => {{
+                        longPressFired = false;
+                        pressTimer = setTimeout(() => {{
+                            longPressFired = true;
+                            pressTimer = null;
+                            renameSession(w.index, w.name);
+                        }}, 500);
+                    }};
+                    const cancelPress = () => {{
+                        if (pressTimer) {{ clearTimeout(pressTimer); pressTimer = null; }}
+                    }};
+                    row.addEventListener('touchstart', startPress, {{ passive: true }});
+                    row.addEventListener('touchend', cancelPress);
+                    row.addEventListener('touchmove', cancelPress);
+                    row.addEventListener('touchcancel', cancelPress);
+                    row.addEventListener('mousedown', startPress);
+                    row.addEventListener('mouseup', cancelPress);
+                    row.addEventListener('mouseleave', cancelPress);
+                    row.addEventListener('contextmenu', (e) => e.preventDefault());
                     row.addEventListener('click', (e) => {{
+                        if (longPressFired) {{ longPressFired = false; return; }}
                         if (e.target.classList.contains('row-close')) return;
                         selectSession(w.index);
                     }});
@@ -613,6 +641,21 @@ async def index():
                 setTimeout(refreshSessions, 200);
             }} catch (err) {{
                 console.error('select failed:', err);
+            }}
+        }}
+
+        async function renameSession(idx, currentName) {{
+            const name = prompt('Rename session', currentName);
+            if (!name || name === currentName) return;
+            try {{
+                await fetch('/tmux/rename', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ index: idx, name }})
+                }});
+                setTimeout(refreshSessions, 200);
+            }} catch (err) {{
+                console.error('rename failed:', err);
             }}
         }}
 
