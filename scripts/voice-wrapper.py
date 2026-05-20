@@ -6,14 +6,16 @@ field at the bottom. Dictation works in the native input, then text is
 injected into the tmux session via `tmux send-keys`.
 """
 
+import json
 import os
 import re
 import subprocess
 import shutil
+import time
 
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
@@ -23,6 +25,49 @@ TAILSCALE = shutil.which("tailscale") or "/usr/local/bin/tailscale"
 TTYD_PORT = 7681
 WRAPPER_PORT = 8080
 TMUX_SESSION = "claude"
+CLAUDE_EPHEMERAL = str(Path.home() / ".local" / "bin" / "claude-ephemeral")
+SESSIONS_DIR = Path.home() / ".claude" / "sessions"
+OVERRIDES_FILE = Path.home() / ".claude" / "session-overrides.json"
+
+
+def sanitize_window_name(name: str) -> str:
+    name = re.sub(r"[^\w\s\-\.]", "", name or "").strip()
+    return name[:32] or "session"
+
+
+def find_new_session(before_pids: set, timeout: float = 8.0):
+    """Poll ~/.claude/sessions/*.json for a new claude session pid; return its sessionId."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for fp in SESSIONS_DIR.glob("*.json"):
+            if fp.stem in before_pids:
+                continue
+            try:
+                data = json.loads(fp.read_text())
+                if data.get("sessionId"):
+                    return data["sessionId"]
+            except (json.JSONDecodeError, FileNotFoundError, OSError):
+                continue
+        time.sleep(0.3)
+    return None
+
+
+def set_session_label(session_id: str, label: str):
+    """Write {sessionId: {name: label}} into session-overrides.json."""
+    try:
+        overrides = json.loads(OVERRIDES_FILE.read_text())
+        if not isinstance(overrides, dict):
+            overrides = {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        overrides = {}
+    overrides.setdefault(session_id, {})["name"] = label
+    OVERRIDES_FILE.write_text(json.dumps(overrides, indent=2))
+
+
+def label_new_session(before_pids: set, label: str):
+    sid = find_new_session(before_pids)
+    if sid:
+        set_session_label(sid, label)
 
 
 app = FastAPI()
@@ -41,6 +86,20 @@ class TextInput(BaseModel):
 
 class KeyInput(BaseModel):
     key: str
+
+
+class NewWindow(BaseModel):
+    name: str = "session"
+    resume: bool = False
+
+
+class WindowIndex(BaseModel):
+    index: int
+
+
+class WindowRename(BaseModel):
+    index: int
+    name: str
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -179,9 +238,159 @@ async def index():
             color: #fff;
             cursor: pointer;
         }}
+        .input-bar .menu-btn {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 44px;
+            min-height: 42px;
+            padding: 0;
+            background: #333;
+            color: #ddd;
+            border: 1px solid #555;
+            border-radius: 8px;
+            font-weight: normal;
+            cursor: pointer;
+            flex-shrink: 0;
+        }}
+        .input-bar .menu-btn:active {{ background: #555; }}
+        .input-bar .menu-btn .icon {{ font-size: 20px; line-height: 1; }}
+        .input-bar .menu-btn .active-name {{ display: none; }}
+        .drawer-backdrop {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 150;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.18s ease;
+        }}
+        .drawer-backdrop.active {{
+            opacity: 1;
+            pointer-events: auto;
+        }}
+        .drawer {{
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 82%;
+            max-width: 320px;
+            height: 100%;
+            height: 100dvh;
+            background: #1f1f1f;
+            border-right: 1px solid #444;
+            z-index: 200;
+            transform: translateX(-100%);
+            transition: transform 0.2s ease;
+            display: flex;
+            flex-direction: column;
+        }}
+        .drawer.open {{ transform: translateX(0); }}
+        .drawer-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #333;
+            color: #fff;
+            font-weight: 600;
+            font-size: 15px;
+        }}
+        .drawer-header .close-x {{
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 24px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 4px;
+        }}
+        .new-session-btn {{
+            margin: 12px 16px 6px;
+            padding: 12px;
+            background: #007aff;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+        }}
+        .new-session-btn:active {{ background: #005bb5; }}
+        .resume-session-btn {{
+            margin: 0 16px 12px;
+            padding: 10px;
+            background: #333;
+            color: #ddd;
+            border: 1px solid #555;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 13px;
+            cursor: pointer;
+        }}
+        .resume-session-btn:active {{ background: #444; }}
+        .session-list {{
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }}
+        .session-list .empty {{
+            text-align: center;
+            color: #666;
+            padding: 24px;
+            font-size: 13px;
+        }}
+        .session-row {{
+            display: flex;
+            align-items: center;
+            padding: 12px 16px;
+            border-bottom: 1px solid #2a2a2a;
+            color: #bbb;
+            cursor: pointer;
+        }}
+        .session-row.active {{
+            background: #143a5e;
+            color: #fff;
+        }}
+        .session-row .name {{
+            flex: 1;
+            font-size: 14px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding-right: 8px;
+        }}
+        .session-row .idx {{
+            color: #666;
+            font-size: 11px;
+            font-family: Menlo, monospace;
+            margin-right: 8px;
+        }}
+        .session-row .row-close {{
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 18px;
+            padding: 6px 10px;
+            margin: -6px -8px -6px 0;
+            cursor: pointer;
+        }}
+        .session-row .row-close:active {{ color: #f55; }}
     </style>
 </head>
 <body>
+    <div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDrawer()"></div>
+    <div class="drawer" id="drawer">
+        <div class="drawer-header">
+            <span>Sessions</span>
+            <button class="close-x" onclick="closeDrawer()">&times;</button>
+        </div>
+        <button class="new-session-btn" onclick="promptNewSession(false)">+ New session</button>
+        <button class="resume-session-btn" onclick="promptNewSession(true)">+ Resume past session</button>
+        <div class="session-list" id="sessionList">
+            <div class="empty">Loading…</div>
+        </div>
+    </div>
     <div class="container">
         <iframe class="terminal-frame" src="http://{ip}:{TTYD_PORT}"></iframe>
         <div class="quick-keys">
@@ -200,6 +409,10 @@ async def index():
                    onchange="uploadPhoto(this)">
         </div>
         <div class="input-bar">
+            <button class="menu-btn" onclick="openDrawer()" aria-label="Menu">
+                <span class="icon">&#9776;</span>
+                <span class="active-name" id="activeName">…</span>
+            </button>
             <textarea id="cmd" rows="1"
                       placeholder="Dictate or type here..."
                       autocomplete="off"
@@ -286,15 +499,118 @@ async def index():
         }}
 
         async function newSession() {{
-            // Exit current Claude session, then start a fresh one
-            await sendText('/exit');
-            setTimeout(() => sendText('claude'), 1500);
+            // Spawn a new tmux window with claude-ephemeral. Old session keeps running.
+            await promptNewSession(false);
         }}
 
         async function resumeSession() {{
-            // Exit current Claude session, then open resume picker
-            await sendText('/exit');
-            setTimeout(() => sendText('claude --resume'), 1500);
+            // Spawn a new tmux window with claude-ephemeral --resume.
+            await promptNewSession(true);
+        }}
+
+        function escapeHtml(s) {{
+            return String(s).replace(/[&<>"']/g, c => (
+                {{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]
+            ));
+        }}
+
+        async function refreshSessions() {{
+            try {{
+                const resp = await fetch('/tmux/windows');
+                const data = await resp.json();
+                const list = document.getElementById('sessionList');
+                const activeNameEl = document.getElementById('activeName');
+                if (!data.windows || !data.windows.length) {{
+                    list.innerHTML = '<div class="empty">No sessions</div>';
+                    activeNameEl.textContent = '…';
+                    return;
+                }}
+                list.innerHTML = '';
+                let activeLabel = '';
+                for (const w of data.windows) {{
+                    if (w.active) activeLabel = w.name;
+                    const row = document.createElement('div');
+                    row.className = 'session-row' + (w.active ? ' active' : '');
+                    row.innerHTML = `
+                        <span class="idx">${{w.index}}</span>
+                        <span class="name">${{escapeHtml(w.name)}}</span>
+                        <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
+                    `;
+                    row.addEventListener('click', (e) => {{
+                        if (e.target.classList.contains('row-close')) return;
+                        selectSession(w.index);
+                    }});
+                    row.querySelector('.row-close').addEventListener('click', (e) => {{
+                        e.stopPropagation();
+                        closeSession(w.index, w.name);
+                    }});
+                    list.appendChild(row);
+                }}
+                activeNameEl.textContent = activeLabel || '…';
+            }} catch (err) {{
+                console.error('refreshSessions failed:', err);
+            }}
+        }}
+
+        function openDrawer() {{
+            document.getElementById('drawer').classList.add('open');
+            document.getElementById('drawerBackdrop').classList.add('active');
+            refreshSessions();
+        }}
+
+        function closeDrawer() {{
+            document.getElementById('drawer').classList.remove('open');
+            document.getElementById('drawerBackdrop').classList.remove('active');
+        }}
+
+        async function promptNewSession(resume) {{
+            const defaultName = (resume ? 'resume-' : 'session-') + Date.now().toString().slice(-4);
+            const name = prompt(resume ? 'Resume session — name?' : 'New session — name?', defaultName);
+            if (!name) return;
+            try {{
+                await fetch('/tmux/new', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ name, resume: !!resume }})
+                }});
+                // Give tmux a moment to create the window before refreshing
+                setTimeout(refreshSessions, 400);
+                closeDrawer();
+            }} catch (err) {{
+                console.error('new session failed:', err);
+            }}
+        }}
+
+        async function selectSession(idx) {{
+            try {{
+                await fetch('/tmux/select', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ index: idx }})
+                }});
+                closeDrawer();
+                setTimeout(refreshSessions, 200);
+            }} catch (err) {{
+                console.error('select failed:', err);
+            }}
+        }}
+
+        async function closeSession(idx, name) {{
+            if (!confirm(`Close session "${{name}}"?`)) return;
+            try {{
+                const resp = await fetch('/tmux/close', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ index: idx }})
+                }});
+                const data = await resp.json();
+                if (data.status === 'rejected') {{
+                    alert(data.error || 'Cannot close this session');
+                }}
+                setTimeout(refreshSessions, 400);
+            }} catch (err) {{
+                console.error('close failed:', err);
+            }}
         }}
 
         function closeCopy() {{
@@ -390,8 +706,12 @@ async def index():
         document.addEventListener('visibilitychange', () => {{
             if (document.visibilityState === 'visible') {{
                 terminal.src = terminal.src;
+                refreshSessions();
             }}
         }});
+
+        // Populate session label + drawer on first paint
+        refreshSessions();
 
         input.focus();
     </script>
@@ -474,6 +794,83 @@ async def upload_file(file: UploadFile = File(...)):
         chunks.append(chunk)
     dest.write_bytes(b"".join(chunks))
     return {"name": dest.name, "path": str(dest)}
+
+
+@app.get("/tmux/windows")
+async def list_windows():
+    """List tmux windows in the claude session. Each is a separate CC session."""
+    result = subprocess.run(
+        [TMUX, "list-windows", "-t", TMUX_SESSION,
+         "-F", "#{window_index}|#{window_name}|#{window_active}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    windows = []
+    for line in result.stdout.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("|", 2)
+        if len(parts) >= 3:
+            windows.append({
+                "index": int(parts[0]),
+                "name": parts[1],
+                "active": parts[2] == "1",
+            })
+    return {"windows": windows}
+
+
+@app.post("/tmux/new")
+async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
+    """Create a new tmux window running claude-ephemeral. Original session keeps running."""
+    name = sanitize_window_name(payload.name)
+    cmd = CLAUDE_EPHEMERAL + (" --resume" if payload.resume else "")
+    # Snapshot live claude session pids so the background task can spot the new one
+    before_pids = {fp.stem for fp in SESSIONS_DIR.glob("*.json")} if SESSIONS_DIR.exists() else set()
+    subprocess.run(
+        [TMUX, "new-window", "-t", f"{TMUX_SESSION}:", "-n", name, cmd],
+        timeout=5,
+    )
+    # Write the friendly name to session-overrides.json once the claude sessionId is known,
+    # so the statusbar's Sessions: segment uses the same label as the drawer.
+    background_tasks.add_task(label_new_session, before_pids, name)
+    return {"status": "created", "name": name}
+
+
+@app.post("/tmux/select")
+async def select_window(payload: WindowIndex):
+    """Switch the active tmux window — iframe will show its content."""
+    subprocess.run(
+        [TMUX, "select-window", "-t", f"{TMUX_SESSION}:{payload.index}"],
+        timeout=5,
+    )
+    return {"status": "selected", "index": payload.index}
+
+
+@app.post("/tmux/close")
+async def close_window(payload: WindowIndex):
+    """Kill a tmux window. Refuses to close the last remaining one (would kill the tmux session)."""
+    list_result = subprocess.run(
+        [TMUX, "list-windows", "-t", TMUX_SESSION, "-F", "#{window_index}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    indices = [l for l in list_result.stdout.strip().split("\n") if l]
+    if len(indices) <= 1:
+        return {"status": "rejected", "error": "cannot close last window"}
+    subprocess.run(
+        [TMUX, "kill-window", "-t", f"{TMUX_SESSION}:{payload.index}"],
+        timeout=5,
+    )
+    return {"status": "closed", "index": payload.index}
+
+
+@app.post("/tmux/rename")
+async def rename_window(payload: WindowRename):
+    """Rename a tmux window. Does not touch session-overrides.json (that's set at creation)."""
+    name = sanitize_window_name(payload.name)
+    subprocess.run(
+        [TMUX, "rename-window", "-t", f"{TMUX_SESSION}:{payload.index}", name],
+        timeout=5,
+    )
+    return {"status": "renamed", "index": payload.index, "name": name}
 
 
 if __name__ == "__main__":

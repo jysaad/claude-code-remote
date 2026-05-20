@@ -5,6 +5,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LOG_DIR="$PROJECT_DIR/logs"
 
+# Prefer local-bin venv (TCC-safe under launchd); fall back to repo venv
+if [ -x "$HOME/.local/bin/remote-cli/.venv/bin/python3" ]; then
+    VENV_PYTHON="$HOME/.local/bin/remote-cli/.venv/bin/python3"
+else
+    VENV_PYTHON="$HOME/Documents/Development/claude-code-remote/.venv/bin/python3"
+fi
+
 mkdir -p "$LOG_DIR"
 
 # Get Tailscale IP
@@ -32,8 +39,8 @@ ttyd \
     --port 7681 \
     --interface "$TAILSCALE_IP" \
     --writable \
-    -t fontSize=14 \
-    -t lineHeight=1.2 \
+    -t fontSize=11 \
+    -t lineHeight=1.1 \
     -t cursorBlink=true \
     -t cursorStyle=block \
     -t scrollback=10000 \
@@ -46,7 +53,7 @@ echo "ttyd running (PID: $TTYD_PID) on http://$TAILSCALE_IP:7681"
 
 # Start voice dictation wrapper
 pkill -f "voice-wrapper" 2>/dev/null || true
-python3 "$SCRIPT_DIR/voice-wrapper.py" >> "$LOG_DIR/voice-wrapper.log" 2>&1 &
+"$VENV_PYTHON" "$SCRIPT_DIR/voice-wrapper.py" >> "$LOG_DIR/voice-wrapper.log" 2>&1 &
 WRAPPER_PID=$!
 echo "voice wrapper running (PID: $WRAPPER_PID) on http://$TAILSCALE_IP:8080"
 

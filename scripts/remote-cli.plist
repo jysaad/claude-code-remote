@@ -2,30 +2,26 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- Change "user" to your preferred label -->
     <key>Label</key>
-    <string>com.user.remote-cli</string>
+    <string>com.context.remote-cli</string>
 
-    <!-- EDIT THIS: Replace YOUR_USERNAME with your macOS username -->
     <key>Program</key>
-    <string>/Users/YOUR_USERNAME/.local/bin/remote-cli/start-remote-cli.sh</string>
+    <string>/Users/John/.local/bin/remote-cli/start-remote-cli.sh</string>
 
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
 
-    <!-- EDIT THIS: Replace YOUR_USERNAME with your macOS username -->
     <key>StandardOutPath</key>
-    <string>/Users/YOUR_USERNAME/.local/bin/remote-cli/logs/launchd-stdout.log</string>
+    <string>/Users/John/.local/bin/remote-cli/logs/launchd-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/YOUR_USERNAME/.local/bin/remote-cli/logs/launchd-stderr.log</string>
+    <string>/Users/John/.local/bin/remote-cli/logs/launchd-stderr.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <!-- EDIT THIS: Replace YOUR_USERNAME with your macOS username -->
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/YOUR_USERNAME/.local/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/John/.local/bin</string>
     </dict>
 </dict>
 </plist>
