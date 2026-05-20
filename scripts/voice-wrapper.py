@@ -394,15 +394,17 @@ async def index():
     <div class="container">
         <iframe class="terminal-frame" src="http://{ip}:{TTYD_PORT}"></iframe>
         <div class="quick-keys">
+            <button onclick="sendKey('Escape')">Esc</button>
+            <button onclick="scrollPane('up')">&#8670;</button>
+            <button onclick="scrollPane('down')">&#8671;</button>
             <button onclick="sendKey('Up')">&#9650;</button>
             <button onclick="sendKey('Down')">&#9660;</button>
-            <button onclick="sendKey('Tab')">Tab</button>
-            <button onclick="sendKey('Escape')">Esc</button>
-            <button onclick="sendKey('C-c')">Ctrl+C</button>
             <button onclick="sendKey('Enter')">Enter</button>
+            <button onclick="sendKey('Tab')">Tab</button>
+            <button onclick="sendKey('BTab')">&#8679;Tab</button>
+            <button onclick="sendKey('/')">/</button>
+            <button onclick="sendKey('C-c')">Ctrl+C</button>
             <button onclick="sendKey('C-l')">Clear</button>
-            <button onclick="newSession()">New</button>
-            <button onclick="resumeSession()">Resume</button>
             <button onclick="copyPane()">Copy</button>
             <button id="photoBtn" onclick="document.getElementById('photoInput').click()">&#128247;</button>
             <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
@@ -480,6 +482,18 @@ async def index():
                 }});
             }} catch (err) {{
                 console.error('Key send failed:', err);
+            }}
+        }}
+
+        async function scrollPane(direction) {{
+            try {{
+                await fetch('/scroll', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ direction }})
+                }});
+            }} catch (err) {{
+                console.error('Scroll failed:', err);
             }}
         }}
 
@@ -719,9 +733,21 @@ async def index():
 </html>"""
 
 
+def _exit_copy_mode():
+    """Best-effort cancel of tmux copy/view mode. No-op (with swallowed
+    stderr) when the pane isn't in a mode. Run this before any send-keys
+    that injects user input so scrolled-back panes don't eat the keystrokes."""
+    subprocess.run(
+        [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "cancel"],
+        capture_output=True,
+        timeout=5,
+    )
+
+
 @app.post("/send")
 async def send_text(payload: TextInput):
     """Send literal text to tmux, then press Enter."""
+    _exit_copy_mode()
     subprocess.run(
         [TMUX, "send-keys", "-t", TMUX_SESSION, "-l", payload.text],
         timeout=5,
@@ -733,10 +759,41 @@ async def send_text(payload: TextInput):
     return {"status": "sent"}
 
 
+class ScrollInput(BaseModel):
+    direction: str
+
+
+@app.post("/scroll")
+async def scroll_pane(payload: ScrollInput):
+    """Scroll the tmux pane's scrollback buffer. Up enters copy mode then
+    pages up; down pages down (auto-exits copy mode at the bottom)."""
+    if payload.direction == "up":
+        subprocess.run(
+            [TMUX, "copy-mode", "-t", TMUX_SESSION],
+            capture_output=True,
+            timeout=5,
+        )
+        subprocess.run(
+            [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "page-up"],
+            capture_output=True,
+            timeout=5,
+        )
+    elif payload.direction == "down":
+        subprocess.run(
+            [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "page-down"],
+            capture_output=True,
+            timeout=5,
+        )
+    else:
+        return {"status": "rejected", "error": "direction must be up or down"}
+    return {"status": "sent"}
+
+
 ALLOWED_KEYS = {
-    "Up", "Down", "Left", "Right", "Tab", "Escape", "Enter",
+    "Up", "Down", "Left", "Right", "Tab", "BTab", "Escape", "Enter",
     "C-c", "C-l", "C-d", "C-z", "C-a", "C-e", "C-k", "C-u",
     "BSpace", "DC", "Home", "End", "PPage", "NPage",
+    "/",
 }
 
 
