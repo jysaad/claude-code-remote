@@ -405,7 +405,7 @@ async def index():
             <button onclick="sendKey('Up')">&#9650;</button>
             <button onclick="sendKey('Down')">&#9660;</button>
             <button onclick="sendKey('Tab')">Tab</button>
-            <button onclick="sendKey('C-u')">Clear</button>
+            <button onclick="sendKey('C-u')">Del</button>
             <button onclick="sendKey('/')">/</button>
             <button onclick="document.getElementById('cameraInput').click()">&#128247;</button>
             <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
