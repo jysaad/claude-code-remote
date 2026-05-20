@@ -109,7 +109,7 @@ async def index():
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Claude Code Remote</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -254,6 +254,11 @@ async def index():
             flex-shrink: 0;
         }}
         .input-bar .menu-btn:active {{ background: #555; }}
+        .input-bar .menu-btn.scrolling {{
+            background: #8a6d00;
+            border-color: #ffd700;
+            color: #fff;
+        }}
         .input-bar .menu-btn .icon {{ font-size: 20px; line-height: 1; }}
         .input-bar .menu-btn .active-name {{ display: none; }}
         .drawer-backdrop {{
@@ -399,15 +404,14 @@ async def index():
             <button onclick="scrollPane('down')">&#8671;</button>
             <button onclick="sendKey('Up')">&#9650;</button>
             <button onclick="sendKey('Down')">&#9660;</button>
-            <button onclick="sendKey('Enter')">Enter</button>
             <button onclick="sendKey('Tab')">Tab</button>
-            <button onclick="sendKey('BTab')">&#8679;Tab</button>
+            <button onclick="sendKey('C-u')">Clear</button>
             <button onclick="sendKey('/')">/</button>
-            <button onclick="sendKey('C-c')">Ctrl+C</button>
-            <button onclick="sendKey('C-l')">Clear</button>
-            <button onclick="copyPane()">Copy</button>
-            <button id="photoBtn" onclick="document.getElementById('photoInput').click()">&#128247;</button>
-            <input type="file" id="photoInput" accept="image/*" multiple style="display:none"
+            <button onclick="document.getElementById('cameraInput').click()">&#128247;</button>
+            <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
+                   onchange="uploadPhoto(this)">
+            <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
+            <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
                    onchange="uploadPhoto(this)">
         </div>
         <div class="input-bar">
@@ -448,7 +452,10 @@ async def index():
 
         async function sendText(override) {{
             let text = override || input.value.trim();
-            if (!text) return;
+            if (!text) {{
+                await sendKey('Enter');
+                return;
+            }}
             // Swap [filename] placeholders to real paths
             text = text.replace(/\[([^\]]+)\]/g, (match, name) => {{
                 if (name.match(/\.(jpg|jpeg|png|gif|webp|heic)$/i)) {{
@@ -663,7 +670,7 @@ async def index():
         async function uploadPhoto(fileInput) {{
             const files = Array.from(fileInput.files);
             if (!files.length) return;
-            const btn = document.getElementById('photoBtn');
+            const btn = fileInput.previousElementSibling;
             const origText = btn.textContent;
             const origPlaceholder = input.placeholder;
 
@@ -715,17 +722,50 @@ async def index():
             }}
         }}
 
-        // Auto-reconnect: reload iframe when tab becomes visible again
+        // Auto-reconnect: reload iframe when tab becomes visible again.
+        // ttyd closes WS with code 1000 when Chrome backgrounds the tab,
+        // which triggers its "Press ⏎ to Reconnect" overlay; force-reload
+        // the iframe to bypass that and reattach to the persistent tmux session.
         const terminal = document.querySelector('.terminal-frame');
+        const TERMINAL_SRC = `http://{ip}:{TTYD_PORT}`;
+        function reloadTerminal() {{
+            terminal.src = 'about:blank';
+            setTimeout(() => {{ terminal.src = TERMINAL_SRC + '?t=' + Date.now(); }}, 50);
+        }}
         document.addEventListener('visibilitychange', () => {{
             if (document.visibilityState === 'visible') {{
-                terminal.src = terminal.src;
+                reloadTerminal();
+                refreshSessions();
+            }}
+        }});
+        window.addEventListener('pageshow', (e) => {{
+            if (e.persisted) {{
+                reloadTerminal();
                 refreshSessions();
             }}
         }});
 
         // Populate session label + drawer on first paint
         refreshSessions();
+
+        // Poll pane mode every 2s to surface the scroll indicator
+        async function refreshState() {{
+            try {{
+                const resp = await fetch('/state');
+                const data = await resp.json();
+                const btn = document.querySelector('.menu-btn');
+                const icon = btn.querySelector('.icon');
+                if (data.in_copy_mode) {{
+                    btn.classList.add('scrolling');
+                    icon.innerHTML = '&#8670;';
+                }} else {{
+                    btn.classList.remove('scrolling');
+                    icon.innerHTML = '&#9776;';
+                }}
+            }} catch (err) {{ /* silent */ }}
+        }}
+        refreshState();
+        setInterval(refreshState, 2000);
 
         input.focus();
     </script>
@@ -802,11 +842,25 @@ async def send_key(payload: KeyInput):
     """Send a special key (Escape, C-c, Enter, etc.) to tmux."""
     if payload.key not in ALLOWED_KEYS:
         return {"status": "rejected", "error": "key not allowed"}
+    if payload.key == "Escape":
+        _exit_copy_mode()
     subprocess.run(
         [TMUX, "send-keys", "-t", TMUX_SESSION, payload.key],
         timeout=5,
     )
     return {"status": "sent"}
+
+
+@app.get("/state")
+async def get_state():
+    """Surface pane mode so the UI can show scroll indicators."""
+    r = subprocess.run(
+        [TMUX, "display-message", "-p", "-t", TMUX_SESSION, "#{pane_in_mode}"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return {"in_copy_mode": r.stdout.strip() == "1"}
 
 
 @app.get("/copy")

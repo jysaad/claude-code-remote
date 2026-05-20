@@ -39,7 +39,8 @@ ttyd \
     --port 7681 \
     --interface "$TAILSCALE_IP" \
     --writable \
-    -t fontSize=8 \
+    -t fontSize=9 \
+    -t reconnect=3 \
     -t lineHeight=1.1 \
     -t cursorBlink=true \
     -t cursorStyle=block \
@@ -85,7 +86,7 @@ while $KEEP_RUNNING; do
         --port 7681 \
         --interface "$TAILSCALE_IP" \
         --writable \
-        -t fontSize=8 \
+        -t fontSize=9 \
         -t lineHeight=1.1 \
         -t cursorBlink=true \
         -t cursorStyle=block \
