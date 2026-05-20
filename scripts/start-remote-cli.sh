@@ -39,7 +39,7 @@ ttyd \
     --port 7681 \
     --interface "$TAILSCALE_IP" \
     --writable \
-    -t fontSize=11 \
+    -t fontSize=8 \
     -t lineHeight=1.1 \
     -t cursorBlink=true \
     -t cursorStyle=block \
@@ -85,8 +85,8 @@ while $KEEP_RUNNING; do
         --port 7681 \
         --interface "$TAILSCALE_IP" \
         --writable \
-        -t fontSize=14 \
-        -t lineHeight=1.2 \
+        -t fontSize=8 \
+        -t lineHeight=1.1 \
         -t cursorBlink=true \
         -t cursorStyle=block \
         -t scrollback=10000 \
