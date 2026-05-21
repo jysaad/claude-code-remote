@@ -13,4 +13,8 @@
 # Kept the file name for stability; renaming touches voice-wrapper.py, the
 # ~/.local/bin/claude-ephemeral symlink, and every doc reference.
 
+# Marker for ~/.claude/statusline.sh to skip the in-terminal bar on phone
+# sessions — the voice-wrapper renders a sidecar HTML bar instead.
+export CLAUDE_REMOTE_PHONE=1
+
 exec claude --dangerously-skip-permissions "$@"

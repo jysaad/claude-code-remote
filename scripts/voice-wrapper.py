@@ -6,6 +6,7 @@ field at the bottom. Dictation works in the native input, then text is
 injected into the tmux session via `tmux send-keys`.
 """
 
+import html as html_lib
 import json
 import os
 import re
@@ -28,6 +29,120 @@ TMUX_SESSION = "claude"
 CLAUDE_EPHEMERAL = str(Path.home() / ".local" / "bin" / "claude-ephemeral")
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 OVERRIDES_FILE = Path.home() / ".claude" / "session-overrides.json"
+STATUSLINE_SH = str(Path.home() / ".claude" / "statusline.sh")
+
+ANSI_RE = re.compile(r"\x1b\[([0-9;]*)m")
+ANSI_BASE_COLORS = {
+    30: "#000000", 31: "#cc0000", 32: "#4e9a06", 33: "#c4a000",
+    34: "#3465a4", 35: "#75507b", 36: "#06989a", 37: "#d3d7cf",
+    90: "#888a85", 91: "#ef2929", 92: "#8ae234", 93: "#fce94f",
+    94: "#729fcf", 95: "#ad7fa8", 96: "#34e2e2", 97: "#eeeeec",
+}
+
+
+def ansi_to_html(text: str) -> str:
+    """Convert ANSI escape sequences in `text` to HTML <span>s with inline styles."""
+    out = []
+    pos = 0
+    style = {"color": None, "bold": False, "dim": False, "underline": False}
+
+    def has_style() -> bool:
+        return bool(style["color"] or style["bold"] or style["dim"] or style["underline"])
+
+    def open_span() -> str:
+        parts = []
+        if style["color"]:
+            parts.append(f"color:{style['color']}")
+        if style["bold"]:
+            parts.append("font-weight:600")
+        if style["dim"]:
+            parts.append("opacity:0.55")
+        if style["underline"]:
+            parts.append("text-decoration:underline")
+        return f'<span style="{";".join(parts)}">' if parts else ""
+
+    def emit(segment: str):
+        if not segment:
+            return
+        escaped = html_lib.escape(segment).replace("\n", "<br>")
+        if has_style():
+            out.append(open_span())
+            out.append(escaped)
+            out.append("</span>")
+        else:
+            out.append(escaped)
+
+    for m in ANSI_RE.finditer(text):
+        emit(text[pos:m.start()])
+        pos = m.end()
+
+        codes_str = m.group(1)
+        codes = [int(c) for c in codes_str.split(";") if c] or [0]
+        i = 0
+        while i < len(codes):
+            c = codes[i]
+            if c == 0:
+                style = {"color": None, "bold": False, "dim": False, "underline": False}
+            elif c == 1:
+                style["bold"] = True
+            elif c == 2:
+                style["dim"] = True
+            elif c == 4:
+                style["underline"] = True
+            elif c == 22:
+                style["bold"] = False
+                style["dim"] = False
+            elif c == 24:
+                style["underline"] = False
+            elif c == 39:
+                style["color"] = None
+            elif c in ANSI_BASE_COLORS:
+                style["color"] = ANSI_BASE_COLORS[c]
+            elif c == 38 and i + 1 < len(codes):
+                kind = codes[i + 1]
+                if kind == 2 and i + 4 < len(codes):
+                    r, g, b = codes[i + 2], codes[i + 3], codes[i + 4]
+                    style["color"] = f"rgb({r},{g},{b})"
+                    i += 4
+                elif kind == 5 and i + 2 < len(codes):
+                    i += 2
+            i += 1
+
+    emit(text[pos:])
+    return "".join(out)
+
+
+def render_statusline_html() -> str:
+    """Run ~/.claude/statusline.sh with synthesized stdin, return ANSI->HTML output."""
+    payload = json.dumps({
+        "session_id": "phone-sidecar",
+        "version": "phone",
+        "model": {"display_name": "Phone"},
+        "effort": {"level": ""},
+        "cwd": str(Path.home()),
+    })
+    try:
+        # Drop CLAUDE_REMOTE_PHONE for this subprocess: statusline.sh early-exits
+        # when that var is set (suppresses the in-terminal bar on phone sessions),
+        # but the sidecar IS the phone bar — it must render fully.
+        # Drop TMUX so statusline.sh doesn't think it's running inside the "claude"
+        # tmux session and enter pane-width compact mode (which clips per-line at
+        # tmux pane_width and ellipsizes the Sessions row mid-list).
+        child_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_REMOTE_PHONE", "TMUX")}
+        result = subprocess.run(
+            ["/bin/bash", STATUSLINE_SH],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=child_env,
+        )
+        # Collapse runs of newlines (statusline.sh double-spaces rows) → single break
+        # and strip trailing whitespace so the bar doesn't grow an empty last line.
+        out = re.sub(r"\n+", "\n", result.stdout).strip()
+        return ansi_to_html(out)
+    except Exception as e:
+        return f'<span style="color:#888">statusbar error: {html_lib.escape(str(e))}</span>'
 
 
 def sanitize_window_name(name: str) -> str:
@@ -131,6 +246,21 @@ async def index():
             border: none;
             width: 100%;
         }}
+        .status-bar {{
+            padding: 6px 8px;
+            background: #1c1c1c;
+            color: #d0d0d0;
+            font-family: 'Menlo', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            border-top: 1px solid #2a2a2a;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 120px;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+        }}
+        .status-bar:empty {{ display: none; }}
         .quick-keys {{
             display: flex;
             gap: 4px;
@@ -403,8 +533,10 @@ async def index():
         </div>
     </div>
     <div class="container">
-        <iframe class="terminal-frame" src="http://{ip}:{TTYD_PORT}"></iframe>
+        <iframe class="terminal-frame" src="about:blank"></iframe>
+        <div class="status-bar" id="statusBar"></div>
         <div class="quick-keys">
+            <button onclick="sendKey('/')">/</button>
             <button onclick="sendKey('Escape')">Esc</button>
             <button onclick="scrollPane('up')">&#8670;</button>
             <button onclick="scrollPane('down')">&#8671;</button>
@@ -412,10 +544,8 @@ async def index():
             <button onclick="sendKey('Down')">&#9660;</button>
             <button onclick="sendKey('Tab')">Tab</button>
             <button onclick="sendKey('C-u')">Del</button>
-            <button onclick="sendKey('/')">/</button>
-            <button onclick="document.getElementById('cameraInput').click()">&#128247;</button>
-            <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none"
-                   onchange="uploadPhoto(this)">
+            <button onclick="copyPane()">&#128203;</button>
+            <button onclick="takeScreenshot(this)">&#128242;</button>
             <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
             <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
                    onchange="uploadPhoto(this)">
@@ -670,6 +800,10 @@ async def index():
                 const data = await resp.json();
                 if (data.status === 'rejected') {{
                     alert(data.error || 'Cannot close this session');
+                }} else if (data.destroyed) {{
+                    // Closed the last window — tmux session is gone. Reload the
+                    // iframe so tmux-attach.sh recreates a fresh empty `claude`.
+                    reloadTerminal();
                 }}
                 setTimeout(refreshSessions, 400);
             }} catch (err) {{
@@ -714,6 +848,15 @@ async def index():
             const files = Array.from(fileInput.files);
             if (!files.length) return;
             const btn = fileInput.previousElementSibling;
+            try {{
+                await uploadFiles(files, btn);
+            }} finally {{
+                fileInput.value = '';
+            }}
+        }}
+
+        async function uploadFiles(files, btn) {{
+            if (!files.length) return;
             const origText = btn.textContent;
             const origPlaceholder = input.placeholder;
 
@@ -761,16 +904,74 @@ async def index():
                 btn.textContent = origText;
                 btn.disabled = false;
                 input.placeholder = origPlaceholder;
-                fileInput.value = '';
             }}
         }}
+
+        async function takeScreenshot(btn) {{
+            const origPlaceholder = input.placeholder;
+            const failMsg = (msg) => {{
+                input.placeholder = msg;
+                setTimeout(() => {{ input.placeholder = origPlaceholder; }}, 3000);
+            }};
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {{
+                failMsg('Screen capture unavailable (needs HTTPS).');
+                return;
+            }}
+            let stream;
+            try {{
+                stream = await navigator.mediaDevices.getDisplayMedia({{ video: true, audio: false }});
+            }} catch (err) {{
+                if (err.name === 'NotAllowedError' || err.name === 'AbortError') return;
+                console.error('Screen capture failed:', err);
+                failMsg('Screenshot failed: ' + (err.message || err.name));
+                return;
+            }}
+            try {{
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                video.muted = true;
+                await video.play();
+                await new Promise(r => requestAnimationFrame(r));
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                canvas.getContext('2d').drawImage(video, 0, 0);
+                video.pause();
+                video.srcObject = null;
+                const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                const file = new File([blob], 'screenshot-' + ts + '.jpg', {{ type: 'image/jpeg' }});
+                await uploadFiles([file], btn);
+            }} catch (err) {{
+                console.error('Screenshot processing error:', err);
+                failMsg('Screenshot processing failed');
+            }} finally {{
+                stream.getTracks().forEach(t => t.stop());
+            }}
+        }}
+
+        // Sidecar statusbar: poll /status every 60s, render server-converted HTML.
+        // Bypasses xterm.js col-truncation by rendering the bar as native HTML.
+        async function refreshStatus() {{
+            try {{
+                const r = await fetch('/status', {{ cache: 'no-store' }});
+                const data = await r.json();
+                const bar = document.getElementById('statusBar');
+                if (bar) bar.innerHTML = data.html || '';
+            }} catch (e) {{ /* silent */ }}
+        }}
+        refreshStatus();
+        setInterval(refreshStatus, 60000);
 
         // Auto-reconnect: reload iframe when tab becomes visible again.
         // ttyd closes WS with code 1000 when Chrome backgrounds the tab,
         // which triggers its "Press ⏎ to Reconnect" overlay; force-reload
         // the iframe to bypass that and reattach to the persistent tmux session.
         const terminal = document.querySelector('.terminal-frame');
-        const TERMINAL_SRC = `http://{ip}:{TTYD_PORT}`;
+        const TERMINAL_SRC = window.location.protocol === 'https:'
+            ? `${{window.location.protocol}}//${{window.location.hostname}}:8443`
+            : `http://{ip}:{TTYD_PORT}`;
+        terminal.src = TERMINAL_SRC;
         function reloadTerminal() {{
             terminal.src = 'about:blank';
             setTimeout(() => {{ terminal.src = TERMINAL_SRC + '?t=' + Date.now(); }}, 50);
@@ -779,12 +980,14 @@ async def index():
             if (document.visibilityState === 'visible') {{
                 reloadTerminal();
                 refreshSessions();
+                refreshStatus();
             }}
         }});
         window.addEventListener('pageshow', (e) => {{
             if (e.persisted) {{
                 reloadTerminal();
                 refreshSessions();
+                refreshStatus();
             }}
         }});
 
@@ -894,6 +1097,12 @@ async def send_key(payload: KeyInput):
     return {"status": "sent"}
 
 
+@app.get("/status")
+async def get_status():
+    """Render Claude Code's statusbar as HTML for the sidecar display."""
+    return {"html": render_statusline_html()}
+
+
 @app.get("/state")
 async def get_state():
     """Surface pane mode so the UI can show scroll indicators."""
@@ -1001,19 +1210,19 @@ async def select_window(payload: WindowIndex):
 
 @app.post("/tmux/close")
 async def close_window(payload: WindowIndex):
-    """Kill a tmux window. Refuses to close the last remaining one (would kill the tmux session)."""
+    """Kill a tmux window. Closing the last window destroys the tmux session;
+    the client should reload the iframe so tmux-attach.sh recreates it."""
     list_result = subprocess.run(
         [TMUX, "list-windows", "-t", TMUX_SESSION, "-F", "#{window_index}"],
         capture_output=True, text=True, timeout=5,
     )
     indices = [l for l in list_result.stdout.strip().split("\n") if l]
-    if len(indices) <= 1:
-        return {"status": "rejected", "error": "cannot close last window"}
+    was_last = len(indices) <= 1
     subprocess.run(
         [TMUX, "kill-window", "-t", f"{TMUX_SESSION}:{payload.index}"],
         timeout=5,
     )
-    return {"status": "closed", "index": payload.index}
+    return {"status": "closed", "index": payload.index, "destroyed": was_last}
 
 
 @app.post("/tmux/rename")
