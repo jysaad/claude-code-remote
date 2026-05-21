@@ -114,8 +114,12 @@ def ansi_to_html(text: str) -> str:
 
 def render_statusline_html() -> str:
     """Run ~/.claude/statusline.sh with synthesized stdin, return ANSI->HTML output."""
+    # Omit session_id: the sidecar isn't a real CC session, and supplying a
+    # synthetic one ("phone-sidecar") makes statusline.sh render a bogus
+    # underlined "Anon" entry in the Sessions row. Empty self_id skips the
+    # name_part composition cleanly.
     payload = json.dumps({
-        "session_id": "phone-sidecar",
+        "session_id": "",
         "version": "phone",
         "model": {"display_name": "Phone"},
         "effort": {"level": ""},
@@ -1085,11 +1089,26 @@ ALLOWED_KEYS = {
 
 @app.post("/key")
 async def send_key(payload: KeyInput):
-    """Send a special key (Escape, C-c, Enter, etc.) to tmux."""
+    """Send a special key (Escape, C-c, Enter, etc.) to tmux.
+
+    Special-case Escape: when the pane is in copy/view mode, only cancel the
+    mode and DO NOT forward Escape — otherwise the Escape passes through to
+    the underlying program (Claude Code interprets it as 'interrupt response'),
+    which surprised John when he was just trying to exit copy-mode scrolling.
+    """
     if payload.key not in ALLOWED_KEYS:
         return {"status": "rejected", "error": "key not allowed"}
     if payload.key == "Escape":
-        _exit_copy_mode()
+        in_mode = subprocess.run(
+            [TMUX, "display", "-p", "-t", TMUX_SESSION, "#{pane_in_mode}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip() == "1"
+        if in_mode:
+            subprocess.run(
+                [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "cancel"],
+                timeout=5,
+            )
+            return {"status": "sent", "exited_copy_mode": True}
     subprocess.run(
         [TMUX, "send-keys", "-t", TMUX_SESSION, payload.key],
         timeout=5,
