@@ -71,29 +71,39 @@ echo "$TTYD_PID" > "$LOG_DIR/ttyd.pid"
 echo "$CAFFEINATE_PID" > "$LOG_DIR/caffeinate.pid"
 echo "$WRAPPER_PID" > "$LOG_DIR/voice-wrapper.pid"
 
-# Watchdog: restart ttyd if it crashes, exit cleanly on SIGTERM
+# Watchdog: restart ttyd or wrapper if either crashes, exit cleanly on SIGTERM
 KEEP_RUNNING=true
-trap 'KEEP_RUNNING=false; kill $TTYD_PID 2>/dev/null' TERM INT
+trap 'KEEP_RUNNING=false; kill $TTYD_PID $WRAPPER_PID 2>/dev/null' TERM INT
 
 while $KEEP_RUNNING; do
-    wait $TTYD_PID 2>/dev/null || true
-    if ! $KEEP_RUNNING; then
-        break
-    fi
-    echo "[$(date)] ttyd exited, restarting in 5s..." >> "$LOG_DIR/ttyd.log"
     sleep 5
-    ttyd \
-        --port 7681 \
-        --interface "$TAILSCALE_IP" \
-        --writable \
-        -t fontSize=12 \
-        -t lineHeight=1.1 \
-        -t cursorBlink=true \
-        -t cursorStyle=block \
-        -t scrollback=10000 \
-        "$SCRIPT_DIR/tmux-attach.sh" \
-        >> "$LOG_DIR/ttyd.log" 2>&1 &
-    TTYD_PID=$!
-    echo "$TTYD_PID" > "$LOG_DIR/ttyd.pid"
-    echo "[$(date)] ttyd restarted (PID: $TTYD_PID)" >> "$LOG_DIR/ttyd.log"
+    $KEEP_RUNNING || break
+
+    if ! kill -0 $TTYD_PID 2>/dev/null; then
+        echo "[$(date)] ttyd exited, restarting..." >> "$LOG_DIR/ttyd.log"
+        ttyd \
+            --port 7681 \
+            --interface "$TAILSCALE_IP" \
+            --writable \
+            -t fontSize=12 \
+            -t reconnect=3 \
+            -t lineHeight=1.1 \
+            -t cursorBlink=true \
+            -t cursorStyle=block \
+            -t scrollback=10000 \
+            -t 'fontFamily="Menlo, Monaco, Consolas, monospace, Apple Color Emoji, Segoe UI Emoji"' \
+            "$SCRIPT_DIR/tmux-attach.sh" \
+            >> "$LOG_DIR/ttyd.log" 2>&1 &
+        TTYD_PID=$!
+        echo "$TTYD_PID" > "$LOG_DIR/ttyd.pid"
+        echo "[$(date)] ttyd restarted (PID: $TTYD_PID)" >> "$LOG_DIR/ttyd.log"
+    fi
+
+    if ! kill -0 $WRAPPER_PID 2>/dev/null; then
+        echo "[$(date)] voice-wrapper exited, restarting..." >> "$LOG_DIR/voice-wrapper.log"
+        "$VENV_PYTHON" "$SCRIPT_DIR/voice-wrapper.py" >> "$LOG_DIR/voice-wrapper.log" 2>&1 &
+        WRAPPER_PID=$!
+        echo "$WRAPPER_PID" > "$LOG_DIR/voice-wrapper.pid"
+        echo "[$(date)] voice-wrapper restarted (PID: $WRAPPER_PID)" >> "$LOG_DIR/voice-wrapper.log"
+    fi
 done
