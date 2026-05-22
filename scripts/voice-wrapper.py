@@ -541,6 +541,7 @@ async def index():
         <div class="status-bar" id="statusBar"></div>
         <div class="quick-keys">
             <button onclick="sendKey('/')">/</button>
+            <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
             <button onclick="sendKey('Escape')">Esc</button>
             <button onclick="scrollPane('up')">&#8670;</button>
             <button onclick="scrollPane('down')">&#8671;</button>
@@ -980,19 +981,23 @@ async def index():
             terminal.src = 'about:blank';
             setTimeout(() => {{ terminal.src = TERMINAL_SRC + '?t=' + Date.now(); }}, 50);
         }}
+        // Full "get me unstuck" action: re-attach the terminal iframe to the
+        // persistent tmux session and refresh the session list + statusbar.
+        // Wired to the ↻ quick-key (manual) and the auto-reconnect listeners
+        // below (tab-foreground / BFCache restore). Manual button covers the
+        // case auto-reconnect misses: ttyd's WS drops without the tab ever
+        // backgrounding (network blip), leaving its "Press ⏎ to Reconnect"
+        // overlay with no visibilitychange to clear it.
+        function reconnectAll() {{
+            reloadTerminal();
+            refreshSessions();
+            refreshStatus();
+        }}
         document.addEventListener('visibilitychange', () => {{
-            if (document.visibilityState === 'visible') {{
-                reloadTerminal();
-                refreshSessions();
-                refreshStatus();
-            }}
+            if (document.visibilityState === 'visible') {{ reconnectAll(); }}
         }});
         window.addEventListener('pageshow', (e) => {{
-            if (e.persisted) {{
-                reloadTerminal();
-                refreshSessions();
-                refreshStatus();
-            }}
+            if (e.persisted) {{ reconnectAll(); }}
         }});
 
         // Populate session label + drawer on first paint
