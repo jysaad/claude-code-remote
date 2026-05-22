@@ -340,7 +340,7 @@ async def index():
         .copy-overlay.active {{
             display: flex;
         }}
-        .copy-overlay textarea {{
+        .copy-overlay .copy-content {{
             flex: 1;
             background: #1a1a1a;
             color: #e0e0e0;
@@ -350,7 +350,11 @@ async def index():
             font-family: Menlo, monospace;
             font-size: 14px;
             line-height: 1.4;
-            resize: none;
+            margin: 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            white-space: pre-wrap;
+            word-break: break-word;
             -webkit-user-select: text;
             user-select: text;
             -webkit-overflow-scrolling: touch;
@@ -569,8 +573,8 @@ async def index():
         </div>
     </div>
     <div class="copy-overlay" id="copyOverlay">
-        <div class="copy-hint">Long-press to select, then Copy</div>
-        <textarea id="copyText" readonly></textarea>
+        <div class="copy-hint">Scroll to read · long-press to select, then Copy</div>
+        <pre id="copyText" class="copy-content"></pre>
         <button class="close-btn" onclick="closeCopy()">Close</button>
     </div>
     <script>
@@ -650,11 +654,11 @@ async def index():
                 const resp = await fetch('/copy');
                 const data = await resp.json();
                 const overlay = document.getElementById('copyOverlay');
-                const textarea = document.getElementById('copyText');
-                textarea.value = data.text;
+                const content = document.getElementById('copyText');
+                content.innerHTML = data.html;
                 overlay.classList.add('active');
                 // Scroll to bottom so most recent output is visible
-                textarea.scrollTop = textarea.scrollHeight;
+                content.scrollTop = content.scrollHeight;
             }} catch (err) {{
                 console.error('Copy failed:', err);
             }}
@@ -1141,12 +1145,17 @@ async def get_state():
 
 @app.get("/copy")
 async def copy_pane():
-    """Capture full tmux pane scrollback for copying."""
+    """Capture full tmux pane scrollback as ANSI-styled HTML so the panel
+    looks like the live terminal (colors, bold, dim, underline). `-e` keeps
+    escape sequences; `-J` joins wrapped lines so long output renders as one
+    logical line. Plain-text copy still works in the browser: selecting text
+    inside the rendered <span>s copies the visible characters only, not the
+    surrounding HTML."""
     result = subprocess.run(
-        [TMUX, "capture-pane", "-t", TMUX_SESSION, "-p", "-S", "-"],
+        [TMUX, "capture-pane", "-t", TMUX_SESSION, "-p", "-S", "-", "-e", "-J"],
         capture_output=True, text=True, timeout=5,
     )
-    return {"text": result.stdout}
+    return {"html": ansi_to_html(result.stdout)}
 
 
 UPLOAD_DIR = Path("/tmp/claude-uploads")
