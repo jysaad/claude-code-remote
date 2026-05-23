@@ -263,6 +263,54 @@ def clear_session_ready(sid: str):
         pass
 
 
+def find_transcript_path(sid: str):
+    """Find the .jsonl transcript for a Claude Code session id by globbing
+    ~/.claude/projects/*/<sid>.jsonl. Returns None if not found."""
+    if not sid:
+        return None
+    projects_root = Path.home() / ".claude" / "projects"
+    if not projects_root.exists():
+        return None
+    matches = list(projects_root.glob(f"*/{sid}.jsonl"))
+    return matches[0] if matches else None
+
+
+def wrap_up_closed_session(transcript_path: Path, sid: str):
+    """Phone close = explicit wrap-up. Pipe the transcript into
+    ~/Context/scripts/session-end-journal.sh, which summarizes into today's
+    vault journal and then deletes the .jsonl via its cleanup_on_exit trap.
+    Also clean up our own per-session state files and the override entry.
+    Silent on failure — never let cleanup break a close."""
+    try:
+        time.sleep(0.5)  # let claude flush the final bytes after SIGHUP
+        script = Path.home() / "Context" / "scripts" / "session-end-journal.sh"
+        if script.exists() and transcript_path.exists():
+            payload = json.dumps({
+                "transcript_path": str(transcript_path),
+                "source": "phone-close",
+            })
+            subprocess.run(
+                [str(script)],
+                input=payload, text=True, timeout=120,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except (subprocess.SubprocessError, OSError):
+        pass
+    for fname in (f"prev-{sid}", f"ready-{sid}"):
+        try:
+            (SESSION_STATE_DIR / fname).unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        if OVERRIDES_FILE.exists():
+            data = json.loads(OVERRIDES_FILE.read_text())
+            if isinstance(data, dict) and sid in data:
+                data.pop(sid)
+                OVERRIDES_FILE.write_text(json.dumps(data, indent=2))
+    except (json.JSONDecodeError, OSError):
+        pass
+
+
 app = FastAPI()
 
 
@@ -1568,9 +1616,26 @@ async def select_window(payload: WindowIndex):
 
 
 @app.post("/tmux/close")
-async def close_window(payload: WindowIndex):
-    """Kill a tmux window. Closing the last window destroys the tmux session;
-    the client should reload the iframe so tmux-attach.sh recreates it."""
+async def close_window(payload: WindowIndex, background_tasks: BackgroundTasks):
+    """Kill a tmux window. If the window was running a CC session, also fire
+    session-end-journal.sh to summarize the conversation into today's vault
+    journal and delete the transcript. Phone close = explicit wrap-up: the
+    knowledge survives in the journal, the raw .jsonl does not. Closing the
+    last window destroys the tmux session; the client should reload the
+    iframe so tmux-attach.sh recreates it."""
+    # Look up window name + sid + transcript BEFORE killing — these die after.
+    name_result = subprocess.run(
+        [TMUX, "display-message", "-p", "-t",
+         f"{TMUX_SESSION}:{payload.index}", "#{window_name}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    window_name = name_result.stdout.strip() if name_result.returncode == 0 else ""
+    sid = None
+    transcript_path = None
+    if window_name:
+        sid, _ = find_cc_session_for_window(window_name)
+        if sid:
+            transcript_path = find_transcript_path(sid)
     list_result = subprocess.run(
         [TMUX, "list-windows", "-t", TMUX_SESSION, "-F", "#{window_index}"],
         capture_output=True, text=True, timeout=5,
@@ -1581,6 +1646,8 @@ async def close_window(payload: WindowIndex):
         [TMUX, "kill-window", "-t", f"{TMUX_SESSION}:{payload.index}"],
         timeout=5,
     )
+    if transcript_path and sid:
+        background_tasks.add_task(wrap_up_closed_session, transcript_path, sid)
     return {"status": "closed", "index": payload.index, "destroyed": was_last}
 
 
