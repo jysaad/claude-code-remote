@@ -6,6 +6,8 @@ field at the bottom. Dictation works in the native input, then text is
 injected into the tmux session via `tmux send-keys`.
 """
 
+from __future__ import annotations
+
 import html as html_lib
 import json
 import os
