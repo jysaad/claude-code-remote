@@ -11,4 +11,9 @@ export LC_ALL="en_US.UTF-8"
 
 # Apple Silicon: /opt/homebrew/bin/tmux | Intel Mac: /usr/local/bin/tmux
 TMUX_BIN=$(which tmux 2>/dev/null || echo "/opt/homebrew/bin/tmux")
-exec "$TMUX_BIN" new-session -A -s claude -c "$HOME"
+
+# Default the first window to claude-ephemeral so a cold attach lands in CC,
+# matching the "+ New session" button behavior. The command is only honored on
+# session creation; subsequent attaches go to whatever's already running.
+CLAUDE_EPHEMERAL="$HOME/.local/bin/claude-ephemeral"
+exec "$TMUX_BIN" new-session -A -s claude -c "$HOME" "$CLAUDE_EPHEMERAL"
