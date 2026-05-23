@@ -420,11 +420,6 @@ async def index():
             flex-shrink: 0;
         }}
         .input-bar .menu-btn:active {{ background: #555; }}
-        .input-bar .menu-btn.scrolling {{
-            background: #8a6d00;
-            border-color: #ffd700;
-            color: #fff;
-        }}
         .input-bar .menu-btn .icon {{ font-size: 20px; line-height: 1; }}
         .input-bar .menu-btn .active-name {{ display: none; }}
         .drawer-backdrop {{
@@ -1038,25 +1033,6 @@ async def index():
         // Populate session label + drawer on first paint
         refreshSessions();
 
-        // Poll pane mode every 2s to surface the scroll indicator
-        async function refreshState() {{
-            try {{
-                const resp = await fetch('/state');
-                const data = await resp.json();
-                const btn = document.querySelector('.menu-btn');
-                const icon = btn.querySelector('.icon');
-                if (data.in_copy_mode) {{
-                    btn.classList.add('scrolling');
-                    icon.innerHTML = '&#8670;';
-                }} else {{
-                    btn.classList.remove('scrolling');
-                    icon.innerHTML = '&#9776;';
-                }}
-            }} catch (err) {{ /* silent */ }}
-        }}
-        refreshState();
-        setInterval(refreshState, 2000);
-
         // Touch-swipe over the terminal pane → scroll tmux scrollback line-by-line.
         // The iframe is output-only on the phone (input flows through this page's
         // textarea), so capturing all pointer events on top of it is safe.
@@ -1117,7 +1093,10 @@ async def index():
                 if (!isTouching || e.touches.length !== 1) return;
                 e.preventDefault();
                 const y = e.touches[0].clientY;
-                const dy = lastY - y;
+                // Natural mobile scrolling: drag finger DOWN reveals older
+                // content above (like dragging a piece of paper). Positive dy
+                // = finger moved down = scroll back into history.
+                const dy = y - lastY;
                 accumulated += dy;
                 lastY = y;
                 movementMag += Math.abs(dy);
