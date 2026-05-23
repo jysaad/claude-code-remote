@@ -626,8 +626,8 @@ async def index():
                 return;
             }}
             // Swap [filename] placeholders to real paths
-            text = text.replace(/\[([^\]]+)\]/g, (match, name) => {{
-                if (name.match(/\.(jpg|jpeg|png|gif|webp|heic)$/i)) {{
+            text = text.replace(/\\[([^\\]]+)\\]/g, (match, name) => {{
+                if (name.match(/\\.(jpg|jpeg|png|gif|webp|heic)$/i)) {{
                     return UPLOAD_DIR + name;
                 }}
                 return match;
@@ -1009,12 +1009,27 @@ async def index():
             refreshSessions();
             refreshStatus();
         }}
+        // Debounce: visibilitychange + focus + pageshow all fire on tab return,
+        // and reloading the iframe 3 times back-to-back leaves it blank.
+        let __lastReconnectAt = 0;
+        function reconnectDebounced() {{
+            const now = Date.now();
+            if (now - __lastReconnectAt < 1500) return;
+            __lastReconnectAt = now;
+            reconnectAll();
+        }}
         document.addEventListener('visibilitychange', () => {{
-            if (document.visibilityState === 'visible') {{ reconnectAll(); }}
+            if (document.visibilityState === 'visible') {{ reconnectDebounced(); }}
         }});
         window.addEventListener('pageshow', (e) => {{
-            if (e.persisted) {{ reconnectAll(); }}
+            if (e.persisted) {{ reconnectDebounced(); }}
         }});
+        // Mobile Chrome doesn't fire visibilitychange reliably across PWA/tab
+        // boundaries; focus + online catch the cases visibility misses,
+        // particularly when ttyd's one-shot auto-reconnect itself fails and
+        // leaves "Press ⏎ to Reconnect" stuck without a visibility transition.
+        window.addEventListener('focus', reconnectDebounced);
+        window.addEventListener('online', reconnectDebounced);
 
         // Populate session label + drawer on first paint
         refreshSessions();
