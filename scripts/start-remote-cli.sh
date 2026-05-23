@@ -45,6 +45,7 @@ ttyd \
     -t cursorBlink=true \
     -t cursorStyle=block \
     -t scrollback=10000 \
+    -t disableLeaveAlert=true \
     -t 'fontFamily="Menlo, Monaco, Consolas, monospace, Apple Color Emoji, Segoe UI Emoji"' \
     "$SCRIPT_DIR/tmux-attach.sh" \
     >> "$LOG_DIR/ttyd.log" 2>&1 &
@@ -91,6 +92,7 @@ while $KEEP_RUNNING; do
             -t cursorBlink=true \
             -t cursorStyle=block \
             -t scrollback=10000 \
+            -t disableLeaveAlert=true \
             -t 'fontFamily="Menlo, Monaco, Consolas, monospace, Apple Color Emoji, Segoe UI Emoji"' \
             "$SCRIPT_DIR/tmux-attach.sh" \
             >> "$LOG_DIR/ttyd.log" 2>&1 &
