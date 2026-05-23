@@ -245,11 +245,39 @@ async def index():
             height: 100vh;
             height: 100dvh;
         }}
-        .terminal-frame {{
+        .terminal-wrap {{
             flex: 1;
+            position: relative;
+            min-height: 0;
+        }}
+        .terminal-frame {{
             border: none;
             width: 100%;
+            height: 100%;
+            display: block;
         }}
+        .touch-scroll-overlay {{
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: transparent;
+            touch-action: none;
+            z-index: 5;
+        }}
+        .scroll-hint {{
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            padding: 4px 8px;
+            background: rgba(0, 122, 255, 0.85);
+            color: #fff;
+            font: 11px -apple-system, system-ui, sans-serif;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 6;
+        }}
+        .scroll-hint.visible {{ opacity: 1; }}
         .status-bar {{
             padding: 6px 8px;
             background: #1c1c1c;
@@ -541,7 +569,11 @@ async def index():
         </div>
     </div>
     <div class="container">
-        <iframe class="terminal-frame" src="about:blank"></iframe>
+        <div class="terminal-wrap">
+            <iframe class="terminal-frame" src="about:blank"></iframe>
+            <div class="touch-scroll-overlay" id="scrollOverlay"></div>
+            <div class="scroll-hint" id="scrollHint">scrolling</div>
+        </div>
         <div class="status-bar" id="statusBar"></div>
         <div class="quick-keys">
             <button onclick="sendKey('/')">/</button>
@@ -553,7 +585,6 @@ async def index():
             <button onclick="sendKey('Down')">&#9660;</button>
             <button onclick="sendKey('Tab')">Tab</button>
             <button onclick="sendKey('C-u')">Del</button>
-            <button onclick="copyPane()">&#128203;</button>
             <button onclick="takeScreenshot(this)">&#128242;</button>
             <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
             <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
@@ -1026,6 +1057,96 @@ async def index():
         refreshState();
         setInterval(refreshState, 2000);
 
+        // Touch-swipe over the terminal pane → scroll tmux scrollback line-by-line.
+        // The iframe is output-only on the phone (input flows through this page's
+        // textarea), so capturing all pointer events on top of it is safe.
+        // Tap with no movement = focus the textarea so the keyboard pops up.
+        (function setupScrollOverlay() {{
+            const overlay = document.getElementById('scrollOverlay');
+            const hint = document.getElementById('scrollHint');
+            if (!overlay) return;
+            const PIXELS_PER_LINE = 14;
+            const THROTTLE_MS = 40;
+            const TAP_THRESHOLD_PX = 8;
+            let lastY = 0;
+            let accumulated = 0;
+            let movementMag = 0;
+            let isTouching = false;
+            let pendingLines = 0;
+            let scrollTimer = null;
+            let hintTimer = null;
+
+            function showHint() {{
+                hint.classList.add('visible');
+                clearTimeout(hintTimer);
+                hintTimer = setTimeout(() => hint.classList.remove('visible'), 600);
+            }}
+
+            async function flush() {{
+                const lines = pendingLines;
+                pendingLines = 0;
+                scrollTimer = null;
+                if (lines === 0) return;
+                try {{
+                    await fetch('/scroll', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{
+                            direction: lines > 0 ? 'up' : 'down',
+                            lines: Math.abs(lines)
+                        }})
+                    }});
+                }} catch (err) {{ /* silent */ }}
+            }}
+
+            function queue(lines) {{
+                pendingLines += lines;
+                if (!scrollTimer) scrollTimer = setTimeout(flush, THROTTLE_MS);
+                showHint();
+            }}
+
+            overlay.addEventListener('touchstart', (e) => {{
+                if (e.touches.length !== 1) return;
+                lastY = e.touches[0].clientY;
+                accumulated = 0;
+                movementMag = 0;
+                isTouching = true;
+            }}, {{ passive: true }});
+
+            overlay.addEventListener('touchmove', (e) => {{
+                if (!isTouching || e.touches.length !== 1) return;
+                e.preventDefault();
+                const y = e.touches[0].clientY;
+                const dy = lastY - y;
+                accumulated += dy;
+                lastY = y;
+                movementMag += Math.abs(dy);
+                const lines = Math.trunc(accumulated / PIXELS_PER_LINE);
+                if (lines !== 0) {{
+                    accumulated -= lines * PIXELS_PER_LINE;
+                    queue(lines);
+                }}
+            }}, {{ passive: false }});
+
+            overlay.addEventListener('touchend', () => {{
+                isTouching = false;
+                if (movementMag < TAP_THRESHOLD_PX) {{
+                    input.focus();
+                }}
+            }}, {{ passive: true }});
+
+            overlay.addEventListener('touchcancel', () => {{
+                isTouching = false;
+            }}, {{ passive: true }});
+
+            // Desktop / trackpad wheel: same overlay, translate wheel delta.
+            overlay.addEventListener('wheel', (e) => {{
+                e.preventDefault();
+                const lines = Math.round(-e.deltaY / PIXELS_PER_LINE);
+                if (lines !== 0) queue(lines);
+            }}, {{ passive: false }});
+        }})();
+
         input.focus();
     </script>
 </body>
@@ -1060,29 +1181,51 @@ async def send_text(payload: TextInput):
 
 class ScrollInput(BaseModel):
     direction: str
+    lines: int | None = None
 
 
 @app.post("/scroll")
 async def scroll_pane(payload: ScrollInput):
-    """Scroll the tmux pane's scrollback buffer. Up enters copy mode then
-    pages up; down pages down (auto-exits copy mode at the bottom)."""
+    """Scroll the tmux pane's scrollback buffer.
+
+    With `lines` set (touch-swipe path): scroll-up/scroll-down N lines. Up
+    enters copy mode first; down is a no-op outside copy mode (which is what
+    we want — finger flicks at the live bottom shouldn't do anything).
+
+    Without `lines` (legacy ⇞/⇟ button path): page-up / page-down as before.
+    """
+    count = max(0, int(payload.lines or 0))
     if payload.direction == "up":
         subprocess.run(
             [TMUX, "copy-mode", "-t", TMUX_SESSION],
             capture_output=True,
             timeout=5,
         )
-        subprocess.run(
-            [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "page-up"],
-            capture_output=True,
-            timeout=5,
-        )
+        if count > 0:
+            subprocess.run(
+                [TMUX, "send-keys", "-t", TMUX_SESSION, "-N", str(count), "-X", "scroll-up"],
+                capture_output=True,
+                timeout=5,
+            )
+        else:
+            subprocess.run(
+                [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "page-up"],
+                capture_output=True,
+                timeout=5,
+            )
     elif payload.direction == "down":
-        subprocess.run(
-            [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "page-down"],
-            capture_output=True,
-            timeout=5,
-        )
+        if count > 0:
+            subprocess.run(
+                [TMUX, "send-keys", "-t", TMUX_SESSION, "-N", str(count), "-X", "scroll-down"],
+                capture_output=True,
+                timeout=5,
+            )
+        else:
+            subprocess.run(
+                [TMUX, "send-keys", "-t", TMUX_SESSION, "-X", "page-down"],
+                capture_output=True,
+                timeout=5,
+            )
     else:
         return {"status": "rejected", "error": "direction must be up or down"}
     return {"status": "sent"}
