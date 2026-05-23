@@ -8,6 +8,7 @@ injected into the tmux session via `tmux send-keys`.
 
 from __future__ import annotations
 
+import asyncio
 import html as html_lib
 import json
 import os
@@ -29,6 +30,8 @@ TTYD_PORT = 7681
 WRAPPER_PORT = 8080
 TMUX_SESSION = "claude"
 CLAUDE_EPHEMERAL = str(Path.home() / ".local" / "bin" / "claude-ephemeral")
+SESSION_DOING_SCRIPT = Path.home() / "Context" / "scripts" / "session-doing-summarize.sh"
+AUTO_RENAME_INTERVAL_SEC = 60
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 OVERRIDES_FILE = Path.home() / ".claude" / "session-overrides.json"
 STATUSLINE_SH = str(Path.home() / ".claude" / "statusline.sh")
@@ -175,22 +178,27 @@ def find_new_session(before_pids: set, timeout: float = 8.0):
     return None
 
 
-def set_session_label(session_id: str, label: str):
-    """Write {sessionId: {name: label}} into session-overrides.json."""
+def set_session_label(session_id: str, label: str, auto: bool = False):
+    """Write {sessionId: {name: label, auto: bool}} into session-overrides.json.
+    auto=True marks the label as replaceable by the doing-loop (a session got
+    its initial name from `/tmux/new` and hasn't been manually renamed since).
+    auto=False (default) means the label is sticky — user-set, leave it alone."""
     try:
         overrides = json.loads(OVERRIDES_FILE.read_text())
         if not isinstance(overrides, dict):
             overrides = {}
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         overrides = {}
-    overrides.setdefault(session_id, {})["name"] = label
+    entry = overrides.setdefault(session_id, {})
+    entry["name"] = label
+    entry["auto"] = auto
     OVERRIDES_FILE.write_text(json.dumps(overrides, indent=2))
 
 
 def label_new_session(before_pids: set, label: str):
     sid = find_new_session(before_pids)
     if sid:
-        set_session_label(sid, label)
+        set_session_label(sid, label, auto=True)
 
 
 def find_cc_session_for_window(window_name: str):
@@ -275,6 +283,20 @@ def find_transcript_path(sid: str):
         return None
     matches = list(projects_root.glob(f"*/{sid}.jsonl"))
     return matches[0] if matches else None
+
+
+def find_cwd_for_session(sid: str):
+    """Return cwd for a CC session by sid, or None if not found."""
+    if not sid:
+        return None
+    for fp in SESSIONS_DIR.glob("*.json"):
+        try:
+            data = json.loads(fp.read_text())
+            if data.get("sessionId") == sid:
+                return data.get("cwd")
+        except (json.JSONDecodeError, FileNotFoundError, OSError):
+            continue
+    return None
 
 
 def wrap_up_closed_session(transcript_path: Path, sid: str):
@@ -1655,13 +1677,115 @@ async def close_window(payload: WindowIndex, background_tasks: BackgroundTasks):
 
 @app.post("/tmux/rename")
 async def rename_window(payload: WindowRename):
-    """Rename a tmux window. Does not touch session-overrides.json (that's set at creation)."""
+    """Rename a tmux window AND update its session-overrides entry so the
+    statusbar's Sessions: segment matches the picker. Clears the override's
+    auto flag — a manual rename pins the name, the doing-loop won't touch it."""
     name = sanitize_window_name(payload.name)
+    # Resolve sid from the CURRENT window name before renaming, so the override
+    # entry (keyed by sid) can be updated to the new name.
+    old_name_result = subprocess.run(
+        [TMUX, "display-message", "-p", "-t",
+         f"{TMUX_SESSION}:{payload.index}", "#{window_name}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    old_name = old_name_result.stdout.strip() if old_name_result.returncode == 0 else ""
+    sid, _ = find_cc_session_for_window(old_name) if old_name else (None, None)
     subprocess.run(
         [TMUX, "rename-window", "-t", f"{TMUX_SESSION}:{payload.index}", name],
         timeout=5,
     )
+    if sid:
+        set_session_label(sid, name, auto=False)
     return {"status": "renamed", "index": payload.index, "name": name}
+
+
+async def auto_rename_loop():
+    """Background coroutine: every AUTO_RENAME_INTERVAL_SEC, walk tmux windows
+    in TMUX_SESSION and refresh the name of any session whose override is still
+    auto=True. Calls ~/Context/scripts/session-doing-summarize.sh per session
+    (the same Haiku-summarizer Mac sessions use). Skips sessions with auto=False
+    (manually renamed via /tmux/rename or the /rename skill — those are sticky).
+    Renames both the tmux window AND the override so the picker, statusbar's
+    Sessions: segment, and remote peer files stay in sync.
+
+    Why this loop exists at all: statusline.sh exits early when
+    CLAUDE_REMOTE_PHONE=1 is set, so phone sessions never populate the
+    /tmp/.statusline-doing-<sid> cache via the normal render path. This loop
+    owns that responsibility for phone sessions."""
+    while True:
+        try:
+            await asyncio.sleep(AUTO_RENAME_INTERVAL_SEC)
+            if not SESSION_DOING_SCRIPT.exists():
+                continue
+            try:
+                overrides = json.loads(OVERRIDES_FILE.read_text())
+                if not isinstance(overrides, dict):
+                    overrides = {}
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            list_result = subprocess.run(
+                [TMUX, "list-windows", "-t", TMUX_SESSION,
+                 "-F", "#{window_index}|#{window_name}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if list_result.returncode != 0:
+                continue
+            for line in list_result.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split("|", 1)
+                if len(parts) < 2:
+                    continue
+                window_idx, window_name = parts[0], parts[1]
+                sid, _ = find_cc_session_for_window(window_name)
+                if not sid:
+                    continue
+                entry = overrides.get(sid)
+                if not isinstance(entry, dict) or not entry.get("auto"):
+                    continue
+                cwd = find_cwd_for_session(sid)
+                if not cwd:
+                    continue
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        str(SESSION_DOING_SCRIPT), sid, cwd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    try:
+                        stdout, _ = await asyncio.wait_for(
+                            proc.communicate(), timeout=30
+                        )
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                        continue
+                except (OSError, ValueError):
+                    continue
+                if proc.returncode != 0:
+                    continue
+                new_name = stdout.decode("utf-8", errors="replace").strip()
+                if not new_name or new_name == window_name:
+                    continue
+                new_name = sanitize_window_name(new_name)
+                if new_name == window_name:
+                    continue
+                subprocess.run(
+                    [TMUX, "rename-window",
+                     "-t", f"{TMUX_SESSION}:{window_idx}", new_name],
+                    timeout=5,
+                )
+                set_session_label(sid, new_name, auto=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never let a transient error kill the loop.
+            pass
+
+
+@app.on_event("startup")
+async def _start_background_tasks():
+    asyncio.create_task(auto_rename_loop())
 
 
 if __name__ == "__main__":
