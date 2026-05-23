@@ -283,7 +283,6 @@ class KeyInput(BaseModel):
 
 class NewWindow(BaseModel):
     name: str = "session"
-    resume: bool = False
 
 
 class WindowIndex(BaseModel):
@@ -563,18 +562,6 @@ async def index():
             cursor: pointer;
         }}
         .new-session-btn:active {{ background: #005bb5; }}
-        .resume-session-btn {{
-            margin: 0 16px 12px;
-            padding: 10px;
-            background: #333;
-            color: #ddd;
-            border: 1px solid #555;
-            border-radius: 8px;
-            font-weight: 500;
-            font-size: 13px;
-            cursor: pointer;
-        }}
-        .resume-session-btn:active {{ background: #444; }}
         .session-list {{
             flex: 1;
             overflow-y: auto;
@@ -653,8 +640,7 @@ async def index():
             <span>Sessions <span class="drawer-hint">hold to rename</span></span>
             <button class="close-x" onclick="closeDrawer()">&times;</button>
         </div>
-        <button class="new-session-btn" onclick="promptNewSession(false)">+ New session</button>
-        <button class="resume-session-btn" onclick="promptNewSession(true)">+ Resume past session</button>
+        <button class="new-session-btn" onclick="promptNewSession()">+ New session</button>
         <div class="session-list" id="sessionList">
             <div class="empty">Loading…</div>
         </div>
@@ -800,12 +786,7 @@ async def index():
 
         async function newSession() {{
             // Spawn a new tmux window with claude-ephemeral. Old session keeps running.
-            await promptNewSession(false);
-        }}
-
-        async function resumeSession() {{
-            // Spawn a new tmux window with claude-ephemeral --resume.
-            await promptNewSession(true);
+            await promptNewSession();
         }}
 
         function escapeHtml(s) {{
@@ -894,15 +875,15 @@ async def index():
             document.getElementById('drawerBackdrop').classList.remove('active');
         }}
 
-        async function promptNewSession(resume) {{
-            const defaultName = (resume ? 'resume-' : 'session-') + Date.now().toString().slice(-4);
-            const name = prompt(resume ? 'Resume session — name?' : 'New session — name?', defaultName);
+        async function promptNewSession() {{
+            const defaultName = 'session-' + Date.now().toString().slice(-4);
+            const name = prompt('New session — name?', defaultName);
             if (!name) return;
             try {{
                 const resp = await fetch('/tmux/new', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ name, resume: !!resume }})
+                    body: JSON.stringify({{ name }})
                 }});
                 const data = await resp.json().catch(() => ({{}}));
                 // If we just created the tmux session itself (came up from the
@@ -1542,7 +1523,7 @@ async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
     with this window as its first. tmux-attach.sh is attach-only, so this
     endpoint is the ONLY surface that can spawn a session — no ghost claude.exe."""
     name = sanitize_window_name(payload.name)
-    cmd = CLAUDE_EPHEMERAL + (" --resume" if payload.resume else "")
+    cmd = CLAUDE_EPHEMERAL
     # Snapshot live claude session pids so the background task can spot the new one
     before_pids = {fp.stem for fp in SESSIONS_DIR.glob("*.json")} if SESSIONS_DIR.exists() else set()
     has_session = subprocess.run(
