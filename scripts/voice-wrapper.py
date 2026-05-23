@@ -30,6 +30,8 @@ CLAUDE_EPHEMERAL = str(Path.home() / ".local" / "bin" / "claude-ephemeral")
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 OVERRIDES_FILE = Path.home() / ".claude" / "session-overrides.json"
 STATUSLINE_SH = str(Path.home() / ".claude" / "statusline.sh")
+SESSION_STATE_DIR = Path("/tmp/.remote-cli-session-state")
+SESSION_STATE_DIR.mkdir(exist_ok=True)
 
 ANSI_RE = re.compile(r"\x1b\[([0-9;]*)m")
 ANSI_BASE_COLORS = {
@@ -187,6 +189,78 @@ def label_new_session(before_pids: set, label: str):
     sid = find_new_session(before_pids)
     if sid:
         set_session_label(sid, label)
+
+
+def find_cc_session_for_window(window_name: str):
+    """Return (sessionId, status) for the CC session whose override-name
+    matches window_name. The override is set by label_new_session() right
+    after the wrapper creates the tmux window, so any session started via
+    the drawer has a match. Returns (None, None) if no match."""
+    try:
+        overrides = json.loads(OVERRIDES_FILE.read_text())
+        if not isinstance(overrides, dict):
+            return None, None
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None, None
+    target_sid = None
+    for sid, attrs in overrides.items():
+        if isinstance(attrs, dict) and attrs.get("name") == window_name:
+            target_sid = sid
+            break
+    if not target_sid:
+        return None, None
+    for fp in SESSIONS_DIR.glob("*.json"):
+        try:
+            data = json.loads(fp.read_text())
+            if data.get("sessionId") == target_sid:
+                return target_sid, data.get("status") or "idle"
+        except (json.JSONDecodeError, FileNotFoundError, OSError):
+            continue
+    return target_sid, None
+
+
+def check_session_ready(sid: str, curr_status: str) -> bool:
+    """Track per-session busy↔idle transitions so the drawer can surface
+    "this session just finished thinking and is waiting for you" with a
+    red dot. State files in SESSION_STATE_DIR:
+      • prev-<sid>  — last-seen status, updated on every observation.
+      • ready-<sid> — touch file iff the most recent transition was
+        busy→idle and no busy observation has happened since.
+    curr=busy clears the ready flag. curr=idle with prev=busy sets it.
+    Returns True if the ready flag is currently set."""
+    if not sid:
+        return False
+    prev_file = SESSION_STATE_DIR / f"prev-{sid}"
+    ready_file = SESSION_STATE_DIR / f"ready-{sid}"
+    prev = ""
+    try:
+        if prev_file.exists():
+            prev = prev_file.read_text().strip()
+    except OSError:
+        pass
+    if curr_status == "busy":
+        try:
+            ready_file.unlink()
+        except FileNotFoundError:
+            pass
+    elif curr_status == "idle" and prev == "busy":
+        ready_file.touch()
+    try:
+        prev_file.write_text(curr_status)
+    except OSError:
+        pass
+    return ready_file.exists()
+
+
+def clear_session_ready(sid: str):
+    """Drop the ready flag — called when the user taps a session in the
+    drawer (i.e., has circled back). Idempotent."""
+    if not sid:
+        return
+    try:
+        (SESSION_STATE_DIR / f"ready-{sid}").unlink()
+    except FileNotFoundError:
+        pass
 
 
 app = FastAPI()
@@ -548,6 +622,28 @@ async def index():
             cursor: pointer;
         }}
         .session-row .row-close:active {{ color: #f55; }}
+        .session-row .ready-dot {{
+            color: #ff4040;
+            font-size: 12px;
+            margin-right: 10px;
+            line-height: 1;
+        }}
+        .session-row .thinking-dot,
+        .menu-btn .thinking-dot {{
+            color: #ffb84d;
+            font-size: 12px;
+            margin-right: 10px;
+            line-height: 1;
+            animation: dot-blink 1s ease-in-out infinite;
+        }}
+        .menu-btn .thinking-dot {{
+            margin-right: 6px;
+            font-size: 11px;
+        }}
+        @keyframes dot-blink {{
+            0%, 100% {{ opacity: 1; }}
+            50% {{ opacity: 0.2; }}
+        }}
     </style>
 </head>
 <body>
@@ -571,9 +667,10 @@ async def index():
         </div>
         <div class="status-bar" id="statusBar"></div>
         <div class="quick-keys">
-            <button onclick="sendKey('/')">/</button>
-            <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
             <button onclick="sendKey('Escape')">Esc</button>
+            <button onclick="sendRedraw()" title="Redraw (peek without interrupting)">&#128065;</button>
+            <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
+            <button onclick="sendKey('/')">/</button>
             <button onclick="sendKey('Up')">&#9650;</button>
             <button onclick="sendKey('Down')">&#9660;</button>
             <button onclick="sendKey('Tab')">Tab</button>
@@ -586,6 +683,7 @@ async def index():
         <div class="input-bar">
             <button class="menu-btn" onclick="openDrawer()" aria-label="Menu">
                 <span class="icon">&#9776;</span>
+                <span class="thinking-dot" id="activeThinking" style="display:none">&#9679;</span>
                 <span class="active-name" id="activeName">…</span>
             </button>
             <textarea id="cmd" rows="1"
@@ -661,6 +759,30 @@ async def index():
             }}
         }}
 
+        async function sendRedraw() {{
+            // Two-pronged: server-side tmux refresh AND a client-side nudge.
+            // If the iframe's rAF is throttled (background tab heuristics,
+            // occluded-iframe rate limit), focusing its window often wakes it.
+            try {{
+                const resp = await fetch('/redraw', {{ method: 'POST' }});
+                const data = await resp.json().catch(() => ({{}}));
+                console.log('redraw:', data);
+            }} catch (err) {{
+                console.error('Redraw failed:', err);
+            }}
+            try {{
+                const iframe = document.querySelector('iframe.terminal-frame');
+                if (iframe && iframe.contentWindow) {{
+                    iframe.contentWindow.focus();
+                    // Force a style recalc on the iframe element itself
+                    iframe.style.transform = 'translateZ(0)';
+                    requestAnimationFrame(() => {{ iframe.style.transform = ''; }});
+                }}
+            }} catch (err) {{
+                console.error('Iframe nudge failed:', err);
+            }}
+        }}
+
         async function copyPane() {{
             try {{
                 const resp = await fetch('/copy');
@@ -698,20 +820,28 @@ async def index():
                 const data = await resp.json();
                 const list = document.getElementById('sessionList');
                 const activeNameEl = document.getElementById('activeName');
+                const activeThinkingEl = document.getElementById('activeThinking');
                 if (!data.windows || !data.windows.length) {{
                     list.innerHTML = '<div class="empty">No sessions</div>';
                     activeNameEl.textContent = '…';
+                    if (activeThinkingEl) activeThinkingEl.style.display = 'none';
                     return;
                 }}
                 list.innerHTML = '';
                 let activeLabel = '';
+                let activeBusy = false;
                 for (const w of data.windows) {{
-                    if (w.active) activeLabel = w.name;
+                    if (w.active) {{ activeLabel = w.name; activeBusy = (w.status === 'busy'); }}
                     const row = document.createElement('div');
                     row.className = 'session-row' + (w.active ? ' active' : '');
+                    const dot = w.active ? ''
+                        : (w.status === 'busy') ? '<span class="thinking-dot">●</span>'
+                        : (w.ready) ? '<span class="ready-dot">●</span>'
+                        : '';
                     row.innerHTML = `
                         <span class="idx">${{w.index}}</span>
                         <span class="name">${{escapeHtml(w.name)}}</span>
+                        ${{dot}}
                         <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
                     `;
                     let pressTimer = null;
@@ -747,6 +877,7 @@ async def index():
                     list.appendChild(row);
                 }}
                 activeNameEl.textContent = activeLabel || '…';
+                if (activeThinkingEl) activeThinkingEl.style.display = activeBusy ? '' : 'none';
             }} catch (err) {{
                 console.error('refreshSessions failed:', err);
             }}
@@ -993,6 +1124,25 @@ async def index():
         refreshStatus();
         setInterval(refreshStatus, 60000);
 
+        // Sessions poll: 3s when tab visible so the thinking dot on the menu
+        // button (and ready/thinking dots in the drawer) track Claude's state
+        // in near-real-time. Pauses when document.hidden — the browser would
+        // throttle anyway, no point hitting the server for nothing.
+        let __sessionsPollTimer = null;
+        function startSessionsPoll() {{
+            if (__sessionsPollTimer) return;
+            __sessionsPollTimer = setInterval(() => {{
+                if (!document.hidden) refreshSessions();
+            }}, 3000);
+        }}
+        function stopSessionsPoll() {{
+            if (__sessionsPollTimer) {{ clearInterval(__sessionsPollTimer); __sessionsPollTimer = null; }}
+        }}
+        document.addEventListener('visibilitychange', () => {{
+            if (document.hidden) stopSessionsPoll(); else startSessionsPoll();
+        }});
+        startSessionsPoll();
+
         // Auto-reconnect: reload iframe when tab becomes visible again.
         // ttyd closes WS with code 1000 when Chrome backgrounds the tab,
         // which triggers its "Press ⏎ to Reconnect" overlay; force-reload
@@ -1228,6 +1378,41 @@ ALLOWED_KEYS = {
 }
 
 
+@app.post("/redraw")
+async def redraw():
+    """Force tmux to push a full screen repaint to every client attached
+    to the session. Non-destructive: no input is sent to the application,
+    no iframe reload.
+
+    refresh-client wants a CLIENT name (e.g. /dev/ttys047), not a session
+    name — passing the session name silently no-ops with exit 1.
+    """
+    try:
+        listing = subprocess.run(
+            [TMUX, "list-clients", "-t", TMUX_SESSION, "-F", "#{client_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if listing.returncode != 0:
+            return {"status": "failed", "error": f"list-clients: {listing.stderr.strip()}"}
+        clients = [line for line in listing.stdout.splitlines() if line.strip()]
+        if not clients:
+            return {"status": "no_clients"}
+        refreshed = 0
+        errors = []
+        for client in clients:
+            r = subprocess.run(
+                [TMUX, "refresh-client", "-t", client],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                refreshed += 1
+            else:
+                errors.append(f"{client}: {r.stderr.strip()}")
+        return {"status": "sent", "clients": len(clients), "refreshed": refreshed, "errors": errors}
+    except (subprocess.SubprocessError, OSError) as e:
+        return {"status": "failed", "error": str(e)}
+
+
 @app.post("/key")
 async def send_key(payload: KeyInput):
     """Send a special key (Escape, C-c, Enter, etc.) to tmux.
@@ -1338,10 +1523,14 @@ async def list_windows():
             continue
         parts = line.split("|", 2)
         if len(parts) >= 3:
+            sid, status = find_cc_session_for_window(parts[1])
+            ready = check_session_ready(sid, status or "idle") if sid else False
             windows.append({
                 "index": int(parts[0]),
                 "name": parts[1],
                 "active": parts[2] == "1",
+                "ready": ready,
+                "status": status or "idle",
             })
     return {"windows": windows}
 
@@ -1383,6 +1572,17 @@ async def select_window(payload: WindowIndex):
         [TMUX, "select-window", "-t", f"{TMUX_SESSION}:{payload.index}"],
         timeout=5,
     )
+    # Tapping a session counts as circling back — drop its ready flag so
+    # the red dot doesn't linger after acknowledgment.
+    name_result = subprocess.run(
+        [TMUX, "display-message", "-p", "-t",
+         f"{TMUX_SESSION}:{payload.index}", "#{window_name}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    name = name_result.stdout.strip()
+    if name:
+        sid, _ = find_cc_session_for_window(name)
+        clear_session_ready(sid)
     return {"status": "selected", "index": payload.index}
 
 
