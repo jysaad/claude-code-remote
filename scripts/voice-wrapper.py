@@ -574,8 +574,6 @@ async def index():
             <button onclick="sendKey('/')">/</button>
             <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
             <button onclick="sendKey('Escape')">Esc</button>
-            <button onclick="scrollPane('up')">&#8670;</button>
-            <button onclick="scrollPane('down')">&#8671;</button>
             <button onclick="sendKey('Up')">&#9650;</button>
             <button onclick="sendKey('Down')">&#9660;</button>
             <button onclick="sendKey('Tab')">Tab</button>
@@ -660,18 +658,6 @@ async def index():
                 }});
             }} catch (err) {{
                 console.error('Key send failed:', err);
-            }}
-        }}
-
-        async function scrollPane(direction) {{
-            try {{
-                await fetch('/scroll', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ direction }})
-                }});
-            }} catch (err) {{
-                console.error('Scroll failed:', err);
             }}
         }}
 
