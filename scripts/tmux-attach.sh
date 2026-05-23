@@ -12,8 +12,23 @@ export LC_ALL="en_US.UTF-8"
 # Apple Silicon: /opt/homebrew/bin/tmux | Intel Mac: /usr/local/bin/tmux
 TMUX_BIN=$(which tmux 2>/dev/null || echo "/opt/homebrew/bin/tmux")
 
-# Default the first window to claude-ephemeral so a cold attach lands in CC,
-# matching the "+ New session" button behavior. The command is only honored on
-# session creation; subsequent attaches go to whatever's already running.
-CLAUDE_EPHEMERAL="$HOME/.local/bin/claude-ephemeral"
-exec "$TMUX_BIN" new-session -A -s claude -c "$HOME" "$CLAUDE_EPHEMERAL"
+# Attach-only: the "+ New Session" sidebar button is the ONLY surface that
+# creates sessions. If the tmux session doesn't exist, show a friendly empty
+# state and block — closing the last window won't auto-respawn a ghost
+# claude.exe, and ttyd reconnects (network blip, tab foreground) attach to
+# the existing session if there is one, else just re-show the empty state.
+if "$TMUX_BIN" has-session -t claude 2>/dev/null; then
+    exec "$TMUX_BIN" attach-session -t claude
+fi
+
+clear
+cat <<'EOF'
+
+  No active sessions.
+
+  Open the menu (☰) on the left and tap "+ New Session" to start one.
+
+EOF
+# Block so ttyd keeps the connection open. Creating a session via the
+# sidebar reloads this iframe, which kills this script.
+exec sleep 86400

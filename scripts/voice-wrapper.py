@@ -768,11 +768,19 @@ async def index():
             const name = prompt(resume ? 'Resume session — name?' : 'New session — name?', defaultName);
             if (!name) return;
             try {{
-                await fetch('/tmux/new', {{
+                const resp = await fetch('/tmux/new', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ name, resume: !!resume }})
                 }});
+                const data = await resp.json().catch(() => ({{}}));
+                // If we just created the tmux session itself (came up from the
+                // "No active sessions" empty state), the iframe is still showing
+                // tmux-attach.sh's empty-state message — reload it so ttyd
+                // re-runs tmux-attach.sh, which now finds the session and attaches.
+                if (data.session_created) {{
+                    reloadTerminal();
+                }}
                 // Give tmux a moment to create the window before refreshing
                 setTimeout(refreshSessions, 400);
                 closeDrawer();
@@ -823,7 +831,8 @@ async def index():
                     alert(data.error || 'Cannot close this session');
                 }} else if (data.destroyed) {{
                     // Closed the last window — tmux session is gone. Reload the
-                    // iframe so tmux-attach.sh recreates a fresh empty `claude`.
+                    // iframe so tmux-attach.sh re-runs and shows the empty-state
+                    // message (it's attach-only, so no ghost session spawns).
                     reloadTerminal();
                 }}
                 setTimeout(refreshSessions, 400);
@@ -1339,19 +1348,32 @@ async def list_windows():
 
 @app.post("/tmux/new")
 async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
-    """Create a new tmux window running claude-ephemeral. Original session keeps running."""
+    """Create a new tmux window running claude-ephemeral. If the tmux session
+    'claude' doesn't exist (all windows were closed earlier), create the session
+    with this window as its first. tmux-attach.sh is attach-only, so this
+    endpoint is the ONLY surface that can spawn a session — no ghost claude.exe."""
     name = sanitize_window_name(payload.name)
     cmd = CLAUDE_EPHEMERAL + (" --resume" if payload.resume else "")
     # Snapshot live claude session pids so the background task can spot the new one
     before_pids = {fp.stem for fp in SESSIONS_DIR.glob("*.json")} if SESSIONS_DIR.exists() else set()
-    subprocess.run(
-        [TMUX, "new-window", "-t", f"{TMUX_SESSION}:", "-n", name, cmd],
-        timeout=5,
-    )
+    has_session = subprocess.run(
+        [TMUX, "has-session", "-t", TMUX_SESSION],
+        capture_output=True, timeout=5,
+    ).returncode == 0
+    if has_session:
+        subprocess.run(
+            [TMUX, "new-window", "-t", f"{TMUX_SESSION}:", "-n", name, cmd],
+            timeout=5,
+        )
+    else:
+        subprocess.run(
+            [TMUX, "new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(Path.home()), cmd],
+            timeout=5,
+        )
     # Write the friendly name to session-overrides.json once the claude sessionId is known,
     # so the statusbar's Sessions: segment uses the same label as the drawer.
     background_tasks.add_task(label_new_session, before_pids, name)
-    return {"status": "created", "name": name}
+    return {"status": "created", "name": name, "session_created": not has_session}
 
 
 @app.post("/tmux/select")

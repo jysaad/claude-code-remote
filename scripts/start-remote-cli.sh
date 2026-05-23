@@ -68,7 +68,7 @@ ttyd \
     --interface "$TAILSCALE_IP" \
     --writable \
     -t fontSize=12 \
-    -t reconnect=0 \
+    -t reconnect=3 \
     -t lineHeight=1.1 \
     -t cursorBlink=true \
     -t cursorStyle=block \
@@ -119,7 +119,7 @@ while $KEEP_RUNNING; do
             --interface "$TAILSCALE_IP" \
             --writable \
             -t fontSize=12 \
-            -t reconnect=0 \
+            -t reconnect=3 \
             -t lineHeight=1.1 \
             -t cursorBlink=true \
             -t cursorStyle=block \
