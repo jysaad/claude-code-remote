@@ -733,7 +733,6 @@ async def index():
             <button onclick="sendKey('Tab')">Tab</button>
             <button onclick="sendKey('C-u')">Del</button>
             <button onclick="copyPane()" title="Copy pane text">&#128203;</button>
-            <button onclick="takeScreenshot(this)">&#128242;</button>
             <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
             <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
                    onchange="uploadPhoto(this)">
@@ -1094,49 +1093,6 @@ async def index():
                 btn.textContent = origText;
                 btn.disabled = false;
                 input.placeholder = origPlaceholder;
-            }}
-        }}
-
-        async function takeScreenshot(btn) {{
-            const origPlaceholder = input.placeholder;
-            const failMsg = (msg) => {{
-                input.placeholder = msg;
-                setTimeout(() => {{ input.placeholder = origPlaceholder; }}, 3000);
-            }};
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {{
-                failMsg('Screen capture unavailable (needs HTTPS).');
-                return;
-            }}
-            let stream;
-            try {{
-                stream = await navigator.mediaDevices.getDisplayMedia({{ video: true, audio: false }});
-            }} catch (err) {{
-                if (err.name === 'NotAllowedError' || err.name === 'AbortError') return;
-                console.error('Screen capture failed:', err);
-                failMsg('Screenshot failed: ' + (err.message || err.name));
-                return;
-            }}
-            try {{
-                const video = document.createElement('video');
-                video.srcObject = stream;
-                video.muted = true;
-                await video.play();
-                await new Promise(r => requestAnimationFrame(r));
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                canvas.getContext('2d').drawImage(video, 0, 0);
-                video.pause();
-                video.srcObject = null;
-                const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
-                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                const file = new File([blob], 'screenshot-' + ts + '.jpg', {{ type: 'image/jpeg' }});
-                await uploadFiles([file], btn);
-            }} catch (err) {{
-                console.error('Screenshot processing error:', err);
-                failMsg('Screenshot processing failed');
-            }} finally {{
-                stream.getTracks().forEach(t => t.stop());
             }}
         }}
 
