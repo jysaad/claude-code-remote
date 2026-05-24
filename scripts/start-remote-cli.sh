@@ -51,6 +51,15 @@ fi
 
 echo "Tailscale IP: $TAILSCALE_IP"
 
+# Auto-detect: bind loopback if Tailscale Serve is fronting ttyd here
+# (Studio); otherwise bind tailnet IP so the Pixel can hit ttyd directly (MBP).
+if tailscale serve status 2>/dev/null | grep -qE "127\.0\.0\.1:7681|localhost:7681"; then
+    TTYD_BIND="127.0.0.1"
+else
+    TTYD_BIND="$TAILSCALE_IP"
+fi
+echo "ttyd bind: $TTYD_BIND"
+
 # Kill any existing ttyd processes
 pkill -f "ttyd" 2>/dev/null || true
 wait_for_port_free 7681 || echo "WARN: port 7681 still busy after 10s, attempting bind anyway" >&2
@@ -65,7 +74,7 @@ echo "caffeinate running (PID: $CAFFEINATE_PID)"
 # Uses tmux-attach.sh wrapper for clean argument handling
 ttyd \
     --port 7681 \
-    --interface 127.0.0.1 \
+    --interface "$TTYD_BIND" \
     --writable \
     -t fontSize=12 \
     -t reconnect=0 \
@@ -117,7 +126,7 @@ while $KEEP_RUNNING; do
         wait_for_port_free 7681 || echo "[$(date)] WARN: port 7681 still busy on restart" >> "$LOG_DIR/ttyd.log"
         ttyd \
             --port 7681 \
-            --interface 127.0.0.1 \
+            --interface "$TTYD_BIND" \
             --writable \
             -t fontSize=12 \
             -t reconnect=0 \

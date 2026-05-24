@@ -1730,8 +1730,26 @@ async def _start_background_tasks():
     asyncio.create_task(auto_rename_loop())
 
 
+def pick_bind_host(port: int) -> str:
+    """If Tailscale Serve is fronting this port on the host, bind loopback
+    (Serve proxies to 127.0.0.1; binding to the tailnet IP would also work
+    on the wire, but Tailscale 1.96.5's Serve hangs proxying through the
+    host's own tailnet interface). Otherwise bind the tailnet IP so the
+    Pixel can reach the wrapper directly."""
+    try:
+        out = subprocess.run(
+            ["tailscale", "serve", "status"],
+            capture_output=True, text=True, timeout=3,
+        ).stdout
+        if "127.0.0.1:%d" % port in out or "localhost:%d" % port in out:
+            return "127.0.0.1"
+    except Exception:
+        pass
+    return get_tailscale_ip()
+
+
 if __name__ == "__main__":
-    ip = get_tailscale_ip()
-    print(f"Voice wrapper: bound 127.0.0.1:{WRAPPER_PORT} (fronted by Tailscale Serve at https://<host>.ts.net/)")
-    print(f"Terminal (ttyd): bound 127.0.0.1:{TTYD_PORT} (fronted at https://<host>.ts.net:8443/)")
-    uvicorn.run(app, host="127.0.0.1", port=WRAPPER_PORT)
+    bind_host = pick_bind_host(WRAPPER_PORT)
+    print(f"Voice wrapper: bound {bind_host}:{WRAPPER_PORT}")
+    print(f"Terminal (ttyd): port {TTYD_PORT}")
+    uvicorn.run(app, host=bind_host, port=WRAPPER_PORT)
