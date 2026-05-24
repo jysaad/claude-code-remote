@@ -726,7 +726,6 @@ async def index():
         <div class="status-bar" id="statusBar"></div>
         <div class="quick-keys">
             <button onclick="sendKey('Escape')">Esc</button>
-            <button onclick="sendRedraw()" title="Redraw (peek without interrupting)">&#128065;</button>
             <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
             <button onclick="sendKey('/')">/</button>
             <button onclick="sendKey('Up')">&#9650;</button>
@@ -814,30 +813,6 @@ async def index():
                 }});
             }} catch (err) {{
                 console.error('Key send failed:', err);
-            }}
-        }}
-
-        async function sendRedraw() {{
-            // Two-pronged: server-side tmux refresh AND a client-side nudge.
-            // If the iframe's rAF is throttled (background tab heuristics,
-            // occluded-iframe rate limit), focusing its window often wakes it.
-            try {{
-                const resp = await fetch('/redraw', {{ method: 'POST' }});
-                const data = await resp.json().catch(() => ({{}}));
-                console.log('redraw:', data);
-            }} catch (err) {{
-                console.error('Redraw failed:', err);
-            }}
-            try {{
-                const iframe = document.querySelector('iframe.terminal-frame');
-                if (iframe && iframe.contentWindow) {{
-                    iframe.contentWindow.focus();
-                    // Force a style recalc on the iframe element itself
-                    iframe.style.transform = 'translateZ(0)';
-                    requestAnimationFrame(() => {{ iframe.style.transform = ''; }});
-                }}
-            }} catch (err) {{
-                console.error('Iframe nudge failed:', err);
             }}
         }}
 
@@ -1430,40 +1405,6 @@ ALLOWED_KEYS = {
     "/",
 }
 
-
-@app.post("/redraw")
-async def redraw():
-    """Force tmux to push a full screen repaint to every client attached
-    to the session. Non-destructive: no input is sent to the application,
-    no iframe reload.
-
-    refresh-client wants a CLIENT name (e.g. /dev/ttys047), not a session
-    name — passing the session name silently no-ops with exit 1.
-    """
-    try:
-        listing = subprocess.run(
-            [TMUX, "list-clients", "-t", TMUX_SESSION, "-F", "#{client_name}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if listing.returncode != 0:
-            return {"status": "failed", "error": f"list-clients: {listing.stderr.strip()}"}
-        clients = [line for line in listing.stdout.splitlines() if line.strip()]
-        if not clients:
-            return {"status": "no_clients"}
-        refreshed = 0
-        errors = []
-        for client in clients:
-            r = subprocess.run(
-                [TMUX, "refresh-client", "-t", client],
-                capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0:
-                refreshed += 1
-            else:
-                errors.append(f"{client}: {r.stderr.strip()}")
-        return {"status": "sent", "clients": len(clients), "refreshed": refreshed, "errors": errors}
-    except (subprocess.SubprocessError, OSError) as e:
-        return {"status": "failed", "error": str(e)}
 
 
 @app.post("/key")
