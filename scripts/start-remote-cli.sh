@@ -65,7 +65,7 @@ echo "caffeinate running (PID: $CAFFEINATE_PID)"
 # Uses tmux-attach.sh wrapper for clean argument handling
 ttyd \
     --port 7681 \
-    --interface "$TAILSCALE_IP" \
+    --interface 127.0.0.1 \
     --writable \
     -t fontSize=12 \
     -t reconnect=0 \
@@ -79,19 +79,20 @@ ttyd \
     >> "$LOG_DIR/ttyd.log" 2>&1 &
 
 TTYD_PID=$!
-echo "ttyd running (PID: $TTYD_PID) on http://$TAILSCALE_IP:7681"
+echo "ttyd running (PID: $TTYD_PID) on 127.0.0.1:7681 (public via Tailscale Serve)"
 
 # Start voice dictation wrapper
 pkill -f "voice-wrapper" 2>/dev/null || true
 wait_for_port_free 8080 || echo "WARN: port 8080 still busy after 10s, attempting bind anyway" >&2
 "$VENV_PYTHON" "$SCRIPT_DIR/voice-wrapper.py" >> "$LOG_DIR/voice-wrapper.log" 2>&1 &
 WRAPPER_PID=$!
-echo "voice wrapper running (PID: $WRAPPER_PID) on http://$TAILSCALE_IP:8080"
+echo "voice wrapper running (PID: $WRAPPER_PID) on 127.0.0.1:8080 (public via Tailscale Serve)"
 
+TS_HOST=$(tailscale status --json 2>/dev/null | sed -n 's/.*"DNSName": "\([^"]*\)".*/\1/p' | head -1 | sed 's/\.$//')
 echo ""
 echo "=== Remote CLI Ready ==="
-echo "Terminal:  http://$TAILSCALE_IP:7681"
-echo "Voice UI:  http://$TAILSCALE_IP:8080"
+echo "Voice UI:  https://$TS_HOST/"
+echo "Terminal:  https://$TS_HOST:8443/"
 echo ""
 echo "Open the Voice UI URL in Chrome on your iPhone (Tailscale must be active)."
 echo "To stop: $SCRIPT_DIR/stop-remote-cli.sh"
@@ -116,7 +117,7 @@ while $KEEP_RUNNING; do
         wait_for_port_free 7681 || echo "[$(date)] WARN: port 7681 still busy on restart" >> "$LOG_DIR/ttyd.log"
         ttyd \
             --port 7681 \
-            --interface "$TAILSCALE_IP" \
+            --interface 127.0.0.1 \
             --writable \
             -t fontSize=12 \
             -t reconnect=0 \

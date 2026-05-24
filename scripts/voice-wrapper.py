@@ -732,6 +732,7 @@ async def index():
             <button onclick="sendKey('Down')">&#9660;</button>
             <button onclick="sendKey('Tab')">Tab</button>
             <button onclick="sendKey('C-u')">Del</button>
+            <button onclick="copyPane()" title="Copy pane text">&#128203;</button>
             <button onclick="takeScreenshot(this)">&#128242;</button>
             <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
             <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
@@ -1731,6 +1732,6 @@ async def _start_background_tasks():
 
 if __name__ == "__main__":
     ip = get_tailscale_ip()
-    print(f"Voice wrapper: http://{ip}:{WRAPPER_PORT}")
-    print(f"Terminal (ttyd): http://{ip}:{TTYD_PORT}")
-    uvicorn.run(app, host=ip, port=WRAPPER_PORT)
+    print(f"Voice wrapper: bound 127.0.0.1:{WRAPPER_PORT} (fronted by Tailscale Serve at https://<host>.ts.net/)")
+    print(f"Terminal (ttyd): bound 127.0.0.1:{TTYD_PORT} (fronted at https://<host>.ts.net:8443/)")
+    uvicorn.run(app, host="127.0.0.1", port=WRAPPER_PORT)
