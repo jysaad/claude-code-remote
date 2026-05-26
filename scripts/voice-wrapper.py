@@ -1192,11 +1192,14 @@ async def index():
         window.addEventListener('pageshow', (e) => {{
             if (e.persisted) {{ reconnectDebounced(); }}
         }});
-        // Mobile Chrome doesn't fire visibilitychange reliably across PWA/tab
-        // boundaries; focus + online catch the cases visibility misses,
-        // particularly when ttyd's one-shot auto-reconnect itself fails and
-        // leaves "Press ⏎ to Reconnect" stuck without a visibility transition.
-        window.addEventListener('focus', reconnectDebounced);
+        // 'online' catches network-blip recoveries (ttyd's WS drops without a
+        // visibility change). The 'focus' listener used to live here too but
+        // was removed — Android Chrome fires window.focus too eagerly on taps,
+        // URL-bar interactions, and visual-viewport shifts. Result was a flash
+        // on every tap of the terminal area because reconnectDebounced ran
+        // before input.focus() had time to update document.activeElement, so
+        // the textarea-focus gate didn't catch it. The manual ↻ button covers
+        // any case visibilitychange + pageshow + online miss.
         window.addEventListener('online', reconnectDebounced);
 
         // Populate session label + drawer on first paint
