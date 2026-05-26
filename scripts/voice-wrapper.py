@@ -413,6 +413,27 @@ async def index():
             touch-action: none;
             z-index: 5;
         }}
+        /* Reconnecting overlay — covers the iframe while it reloads so the
+           user never sees ttyd's 'Press ⏎ to Reconnect' or a blank flash. */
+        .iframe-reloading {{
+            position: absolute;
+            inset: 0;
+            background: #1a1a1a;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 7;
+            color: #888;
+            font: 14px Menlo, monospace;
+        }}
+        .iframe-reloading.visible {{ display: flex; }}
+        .iframe-reloading::before {{
+            content: 'reconnecting…';
+            padding: 14px 22px;
+            background: #252525;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }}
         .scroll-hint {{
             position: absolute;
             top: 8px;
@@ -849,6 +870,7 @@ async def index():
     <div class="container">
         <div class="terminal-wrap">
             <iframe class="terminal-frame" src="about:blank" tabindex="-1"></iframe>
+            <div class="iframe-reloading" id="iframeReloading"></div>
             <div class="touch-scroll-overlay" id="scrollOverlay"></div>
             <div class="scroll-hint" id="scrollHint">scrolling</div>
         </div>
@@ -1395,10 +1417,29 @@ async def index():
             ? `${{window.location.protocol}}//${{window.location.hostname}}:8443`
             : `http://{ip}:{TTYD_PORT}`;
         terminal.src = TERMINAL_SRC;
+        // Reconnecting overlay state — visible during iframe reload, hidden
+        // when the iframe finishes loading the REAL URL (not about:blank).
+        // Bridges the visual gap that previously showed ttyd's "Press ⏎ to
+        // Reconnect" prompt or a blank white flash to the user.
+        const reloadingOverlay = document.getElementById('iframeReloading');
+        let __pendingRealLoad = false;
         function reloadTerminal() {{
+            if (reloadingOverlay) reloadingOverlay.classList.add('visible');
+            __pendingRealLoad = true;
             terminal.src = 'about:blank';
             setTimeout(() => {{ terminal.src = TERMINAL_SRC + '?t=' + Date.now(); }}, 50);
         }}
+        terminal.addEventListener('load', () => {{
+            // about:blank load is the intermediate step; ignore it.
+            // Only hide once the real ttyd URL has loaded. Small delay so
+            // xterm.js has time to render its first frame.
+            if (__pendingRealLoad && terminal.src && !terminal.src.endsWith('about:blank')) {{
+                __pendingRealLoad = false;
+                setTimeout(() => {{
+                    if (reloadingOverlay) reloadingOverlay.classList.remove('visible');
+                }}, 300);
+            }}
+        }});
         // Full "get me unstuck" action: re-attach the terminal iframe to the
         // persistent tmux session and refresh the session list + statusbar.
         // Wired to the ↻ quick-key (manual) and the auto-reconnect listeners
@@ -1700,10 +1741,13 @@ async def index():
                     return;
                 }}
                 if (startX < EDGE_SWIPE_START_PX) mode = 'edge-candidate';
-                // Pull-to-refresh only when scroll mode is OFF — when ON, the
-                // user explicitly opted into terminal scrolling and gestures
-                // at the top belong to that, not refresh.
-                else if (startY < TOP_GRAB_PX && !inCopyMode) mode = 'pull-candidate';
+                // Pull-to-refresh: ANYWHERE on the page (not just y<30) when
+                // scroll mode is OFF. The previous y<30 threshold was nearly
+                // impossible to hit reliably on a phone — the user's thumb
+                // doesn't naturally start at the very top edge. Now any
+                // downward drag of >80 px counts. When scroll mode is ON,
+                // gestures belong to terminal scrolling, not refresh.
+                else if (!inCopyMode) mode = 'pull-candidate';
                 else mode = null;
             }}, {{ capture: true, passive: true }});
 
