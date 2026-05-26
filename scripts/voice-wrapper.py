@@ -856,7 +856,7 @@ async def index():
             <div class="status-bar" id="statusBar"></div>
             <div class="quick-keys">
                 <button onclick="sendKey('Escape')">Esc</button>
-                <button onclick="exitScroll()" title="Exit scroll mode (back to live, never interrupts Claude)">&#9196;</button>
+                <button id="scrollBtn" title="Scroll up (enter scroll mode; never interrupts Claude)">&#9195;</button>
                 <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
                 <button id="slashBtn" title="Tap: /  ·  Long-press: all skills">/</button>
                 <button onclick="sendKey('Up')">&#9650;</button>
@@ -1005,16 +1005,44 @@ async def index():
             }}
         }}
 
-        // Exit tmux copy/view mode without forwarding any key to the
-        // underlying program. Safe to mash — when not in copy-mode, the
-        // server-side cancel is a no-op (stderr swallowed). Use this
-        // instead of Esc when all you want is to stop scrolling.
-        async function exitScroll() {{
-            try {{
-                await fetch('/scroll/exit', {{ method: 'POST' }});
-            }} catch (err) {{ /* silent */ }}
-            input.focus();
+        // Context-aware scroll button. State synced from /tmux/windows
+        // (in_copy_mode). NEVER interrupts Claude under any state.
+        //   not-in-copy-mode → ⏫  tap = enter copy mode + page up
+        //   in-copy-mode     → ⏬  tap = exit copy mode (back to live)
+        // The Esc button (separate, leftmost) keeps its own gated
+        // behavior; this button is the no-mental-load scroll surface
+        // for users who don't trust the Esc gating in the heat of work.
+        let inCopyMode = false;
+        function updateScrollBtn() {{
+            const btn = document.getElementById('scrollBtn');
+            if (!btn) return;
+            if (inCopyMode) {{
+                btn.innerHTML = '&#9196;';  // ⏬
+                btn.title = 'Exit scroll mode (back to live, never interrupts Claude)';
+            }} else {{
+                btn.innerHTML = '&#9195;';  // ⏫
+                btn.title = 'Scroll up (enter scroll mode; never interrupts Claude)';
+            }}
         }}
+        async function toggleScroll() {{
+            if (inCopyMode) {{
+                try {{ await fetch('/scroll/exit', {{ method: 'POST' }}); }}
+                catch (err) {{ /* silent */ }}
+            }} else {{
+                try {{
+                    await fetch('/scroll', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ direction: 'up' }})
+                    }});
+                }} catch (err) {{ /* silent */ }}
+            }}
+            input.focus();
+            // Refresh state ASAP so the button label flips without waiting
+            // for the 3s poll cycle.
+            setTimeout(refreshSessions, 200);
+        }}
+        document.getElementById('scrollBtn')?.addEventListener('click', toggleScroll);
 
         async function copyPane() {{
             try {{
@@ -1124,6 +1152,12 @@ async def index():
                 activeNameEl.textContent = activeLabel || '…';
                 if (activeThinkingEl) activeThinkingEl.style.display = anyBusy ? '' : 'none';
                 if (activeReadyEl) activeReadyEl.style.display = (!anyBusy && anyReady) ? '' : 'none';
+                // Sync the scroll button's emoji to current pane mode.
+                const nextInCopy = !!data.in_copy_mode;
+                if (nextInCopy !== inCopyMode) {{
+                    inCopyMode = nextInCopy;
+                    updateScrollBtn();
+                }}
             }} catch (err) {{
                 console.error('refreshSessions failed:', err);
             }}
@@ -1955,7 +1989,17 @@ async def list_windows():
                 except (subprocess.SubprocessError, OSError):
                     entry["last_line"] = ""
             windows.append(entry)
-    return {"windows": windows}
+    # Active-pane copy-mode flag — drives the scroll button's emoji
+    # toggle (⏫ when live, ⏬ when scrolled-back into history).
+    try:
+        mode_res = subprocess.run(
+            [TMUX, "display-message", "-p", "-t", TMUX_SESSION, "#{pane_in_mode}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        in_copy_mode = mode_res.stdout.strip() == "1"
+    except (subprocess.SubprocessError, OSError):
+        in_copy_mode = False
+    return {"windows": windows, "in_copy_mode": in_copy_mode}
 
 
 @app.get("/skills")
