@@ -374,15 +374,31 @@ async def index():
             touch-action: manipulation;
         }}
         .container {{
-            display: flex;
-            flex-direction: column;
+            position: relative;
+            width: 100%;
+            /* 100lvh = large viewport, does NOT shrink when keyboard opens.
+               Critical for keeping the iframe size stable so xterm.js
+               doesn't re-fit on every textarea tap. 100vh fallback for
+               browsers without large-viewport-unit support (pre-2022). */
             height: 100vh;
-            height: 100dvh;
+            height: 100lvh;
         }}
         .terminal-wrap {{
-            flex: 1;
-            position: relative;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: var(--bottom-panel-height, 110px);
             min-height: 0;
+        }}
+        .bottom-panel {{
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: var(--keyboard-height, 0px);
+            background: #1a1a1a;
+            z-index: 20;
+            transition: bottom 0.15s ease-out;
         }}
         .terminal-frame {{
             border: none;
@@ -635,12 +651,25 @@ async def index():
             font-size: 13px;
         }}
         .session-row {{
-            display: flex;
-            align-items: center;
+            display: block;
             padding: 12px 16px;
             border-bottom: 1px solid #2a2a2a;
             color: #bbb;
             cursor: pointer;
+        }}
+        .session-row .row-main {{
+            display: flex;
+            align-items: center;
+        }}
+        .session-row .row-preview {{
+            margin-top: 4px;
+            color: #888;
+            font-size: 11px;
+            font-family: Menlo, monospace;
+            line-height: 1.3;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
         .session-row.active {{
             background: #143a5e;
@@ -688,6 +717,121 @@ async def index():
             0%, 100% {{ opacity: 1; }}
             50% {{ opacity: 0.2; }}
         }}
+        /* --- Toast (send failures, etc.) --- */
+        .toast {{
+            position: fixed;
+            bottom: calc(var(--bottom-panel-height, 110px) + var(--keyboard-height, 0px) + 12px);
+            left: 50%;
+            transform: translateX(-50%) translateY(20px);
+            background: #c0392b;
+            color: #fff;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.2s, transform 0.2s, bottom 0.15s;
+            pointer-events: none;
+            z-index: 300;
+            max-width: 90%;
+            text-align: center;
+        }}
+        .toast.visible {{
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+            pointer-events: auto;
+        }}
+        /* --- Send button states --- */
+        .input-bar button.sending {{
+            opacity: 0.6;
+            cursor: progress;
+        }}
+        /* --- Skills bottom sheet --- */
+        .skills-backdrop {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 250;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.18s ease;
+        }}
+        .skills-backdrop.active {{
+            opacity: 1;
+            pointer-events: auto;
+        }}
+        .skills-sheet {{
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: var(--keyboard-height, 0px);
+            max-height: 70vh;
+            background: #1f1f1f;
+            border-top: 1px solid #444;
+            border-radius: 12px 12px 0 0;
+            z-index: 300;
+            transform: translateY(110%);
+            transition: transform 0.22s ease, bottom 0.15s ease-out;
+            display: flex;
+            flex-direction: column;
+        }}
+        .skills-sheet.open {{ transform: translateY(0); }}
+        .skills-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #333;
+            color: #fff;
+            font-weight: 600;
+            font-size: 15px;
+        }}
+        .skills-header .close-x {{
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 24px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 4px;
+        }}
+        .skills-list {{
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding: 4px 0;
+        }}
+        .skills-row {{
+            padding: 12px 16px;
+            color: #ccc;
+            font-family: Menlo, monospace;
+            font-size: 14px;
+            cursor: pointer;
+            border-bottom: 1px solid #2a2a2a;
+        }}
+        .skills-row:active {{ background: #2a2a2a; color: #fff; }}
+        .skills-row:last-child {{ border-bottom: none; }}
+        .skills-empty {{
+            padding: 24px;
+            color: #666;
+            text-align: center;
+            font-size: 13px;
+        }}
+        /* --- Pull-to-refresh indicator --- */
+        .pull-indicator {{
+            position: fixed;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 6px 14px;
+            background: rgba(0, 122, 255, 0.85);
+            color: #fff;
+            font: 12px -apple-system, system-ui, sans-serif;
+            border-radius: 14px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 400;
+        }}
+        .pull-indicator.visible {{ opacity: 1; }}
     </style>
 </head>
 <body>
@@ -708,35 +852,49 @@ async def index():
             <div class="touch-scroll-overlay" id="scrollOverlay"></div>
             <div class="scroll-hint" id="scrollHint">scrolling</div>
         </div>
-        <div class="status-bar" id="statusBar"></div>
-        <div class="quick-keys">
-            <button onclick="sendKey('Escape')">Esc</button>
-            <button onclick="exitScroll()" title="Exit scroll mode (back to live, never interrupts Claude)">&#9196;</button>
-            <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
-            <button onclick="sendKey('/')">/</button>
-            <button onclick="sendKey('Up')">&#9650;</button>
-            <button onclick="sendKey('Down')">&#9660;</button>
-            <button onclick="sendKey('Tab')">Tab</button>
-            <button onclick="sendKey('C-u')">Del</button>
-            <button onclick="copyPane()" title="Copy pane text">&#128203;</button>
-            <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
-            <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
-                   onchange="uploadPhoto(this)">
+        <div class="bottom-panel" id="bottomPanel">
+            <div class="status-bar" id="statusBar"></div>
+            <div class="quick-keys">
+                <button onclick="sendKey('Escape')">Esc</button>
+                <button onclick="exitScroll()" title="Exit scroll mode (back to live, never interrupts Claude)">&#9196;</button>
+                <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
+                <button id="slashBtn" title="Tap: /  ·  Long-press: all skills">/</button>
+                <button onclick="sendKey('Up')">&#9650;</button>
+                <button onclick="sendKey('Down')">&#9660;</button>
+                <button onclick="sendKey('Tab')">Tab</button>
+                <button onclick="sendKey('C-u')">Del</button>
+                <button onclick="copyPane()" title="Copy pane text">&#128203;</button>
+                <button onclick="document.getElementById('galleryInput').click()">&#128444;&#65039;</button>
+                <input type="file" id="galleryInput" accept="image/*" multiple style="display:none"
+                       onchange="uploadPhoto(this)">
+            </div>
+            <div class="input-bar">
+                <button class="menu-btn" onclick="openDrawer()" aria-label="Menu">
+                    <span class="icon">&#9776;</span>
+                    <span class="thinking-dot" id="activeThinking" style="display:none">&#9679;</span>
+                    <span class="ready-dot" id="activeReady" style="display:none">&#9679;</span>
+                    <span class="active-name" id="activeName">…</span>
+                </button>
+                <textarea id="cmd" rows="1"
+                          placeholder="Dictate or type here..."
+                          autocomplete="off"
+                          autocorrect="off"
+                          autocapitalize="off"
+                          enterkeyhint="send"></textarea>
+                <button id="sendBtn" onclick="sendText()">Send</button>
+            </div>
         </div>
-        <div class="input-bar">
-            <button class="menu-btn" onclick="openDrawer()" aria-label="Menu">
-                <span class="icon">&#9776;</span>
-                <span class="thinking-dot" id="activeThinking" style="display:none">&#9679;</span>
-                <span class="ready-dot" id="activeReady" style="display:none">&#9679;</span>
-                <span class="active-name" id="activeName">…</span>
-            </button>
-            <textarea id="cmd" rows="1"
-                      placeholder="Dictate or type here..."
-                      autocomplete="off"
-                      autocorrect="off"
-                      autocapitalize="off"
-                      enterkeyhint="send"></textarea>
-            <button onclick="sendText()">Send</button>
+    </div>
+    <div class="toast" id="toast"></div>
+    <div class="pull-indicator" id="pullIndicator">pull to refresh</div>
+    <div class="skills-backdrop" id="skillsBackdrop" onclick="closeSkillsSheet()"></div>
+    <div class="skills-sheet" id="skillsSheet">
+        <div class="skills-header">
+            <span>Skills</span>
+            <button class="close-x" onclick="closeSkillsSheet()">&times;</button>
+        </div>
+        <div class="skills-list" id="skillsList">
+            <div class="skills-empty">Loading…</div>
         </div>
     </div>
     <div class="copy-overlay" id="copyOverlay">
@@ -776,6 +934,19 @@ async def index():
             }}
         }});
 
+        // Toast helper — used by sendText() on failure and anywhere else
+        // we want a non-blocking error message. Stacks the message above the
+        // bottom panel (and above the keyboard when up).
+        let __toastTimer = null;
+        function showToast(msg, durationMs) {{
+            const t = document.getElementById('toast');
+            if (!t) return;
+            t.textContent = msg;
+            t.classList.add('visible');
+            clearTimeout(__toastTimer);
+            __toastTimer = setTimeout(() => t.classList.remove('visible'), durationMs || 3000);
+        }}
+
         async function sendText(override) {{
             let text = override || input.value.trim();
             if (!text) {{
@@ -790,12 +961,20 @@ async def index():
                 return match;
             }});
 
+            const sendBtn = document.getElementById('sendBtn');
+            const prevSendLabel = sendBtn ? sendBtn.textContent : 'Send';
+            if (sendBtn) {{
+                sendBtn.textContent = '…';
+                sendBtn.classList.add('sending');
+                sendBtn.disabled = true;
+            }}
             try {{
-                await fetch('/send', {{
+                const resp = await fetch('/send', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ text }})
                 }});
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 if (!override) {{
                     input.value = '';
                     input.style.height = 'auto';
@@ -803,6 +982,14 @@ async def index():
                 }}
             }} catch (err) {{
                 console.error('Send failed:', err);
+                showToast('send failed — text kept, tap Send to retry');
+                // Deliberately do NOT clear input on failure so retry is one tap.
+            }} finally {{
+                if (sendBtn) {{
+                    sendBtn.textContent = prevSendLabel;
+                    sendBtn.classList.remove('sending');
+                    sendBtn.disabled = false;
+                }}
             }}
         }}
 
@@ -889,10 +1076,18 @@ async def index():
                     const dot = (w.status === 'busy') ? '<span class="thinking-dot">●</span>'
                         : (w.ready) ? '<span class="ready-dot">●</span>'
                         : '';
+                    // Output preview: only shown for red (ready) sessions, so
+                    // you can triage what's waiting without entering the row.
+                    const preview = (w.ready && w.last_line)
+                        ? `<div class="row-preview">${{escapeHtml(w.last_line)}}</div>`
+                        : '';
                     row.innerHTML = `
-                        <span class="name">${{escapeHtml(w.name)}}</span>
-                        ${{dot}}
-                        <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
+                        <div class="row-main">
+                            <span class="name">${{escapeHtml(w.name)}}</span>
+                            ${{dot}}
+                            <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
+                        </div>
+                        ${{preview}}
                     `;
                     let pressTimer = null;
                     let longPressFired = false;
@@ -1307,6 +1502,214 @@ async def index():
             overlay.addEventListener('click', () => input.focus());
         }})();
 
+        // ============================================================
+        // Skills bottom sheet — long-press the / quick-key to open.
+        // Fetches /skills which lists ~/.claude/skills/ subdirectories
+        // (alphabetized). Tap a row to fire `/<skillname>` to claude.
+        // Tap-and-release on / sends a literal /; long-press (500ms)
+        // opens the sheet without sending anything.
+        // ============================================================
+        let __skillsCache = null;
+        async function openSkillsSheet() {{
+            const sheet = document.getElementById('skillsSheet');
+            const backdrop = document.getElementById('skillsBackdrop');
+            const listEl = document.getElementById('skillsList');
+            sheet.classList.add('open');
+            backdrop.classList.add('active');
+            if (!__skillsCache) {{
+                try {{
+                    const r = await fetch('/skills');
+                    const data = await r.json();
+                    __skillsCache = data.skills || [];
+                }} catch (err) {{
+                    listEl.innerHTML = '<div class="skills-empty">failed to load skills</div>';
+                    return;
+                }}
+            }}
+            if (!__skillsCache.length) {{
+                listEl.innerHTML = '<div class="skills-empty">no skills found</div>';
+                return;
+            }}
+            listEl.innerHTML = '';
+            for (const name of __skillsCache) {{
+                const row = document.createElement('div');
+                row.className = 'skills-row';
+                row.textContent = '/' + name;
+                row.addEventListener('click', async () => {{
+                    closeSkillsSheet();
+                    await sendText('/' + name);
+                }});
+                listEl.appendChild(row);
+            }}
+        }}
+        function closeSkillsSheet() {{
+            document.getElementById('skillsSheet').classList.remove('open');
+            document.getElementById('skillsBackdrop').classList.remove('active');
+        }}
+        (function setupSlashButton() {{
+            const btn = document.getElementById('slashBtn');
+            if (!btn) return;
+            let pressTimer = null;
+            let longPressFired = false;
+            const startPress = () => {{
+                longPressFired = false;
+                pressTimer = setTimeout(() => {{
+                    longPressFired = true;
+                    pressTimer = null;
+                    openSkillsSheet();
+                }}, 500);
+            }};
+            const cancelPress = () => {{
+                if (pressTimer) {{ clearTimeout(pressTimer); pressTimer = null; }}
+            }};
+            btn.addEventListener('touchstart', startPress, {{ passive: true }});
+            btn.addEventListener('touchend', cancelPress);
+            btn.addEventListener('touchmove', cancelPress);
+            btn.addEventListener('touchcancel', cancelPress);
+            btn.addEventListener('mousedown', startPress);
+            btn.addEventListener('mouseup', cancelPress);
+            btn.addEventListener('mouseleave', cancelPress);
+            btn.addEventListener('contextmenu', (e) => e.preventDefault());
+            btn.addEventListener('click', () => {{
+                if (longPressFired) {{ longPressFired = false; return; }}
+                sendKey('/');
+            }});
+        }})();
+
+        // ============================================================
+        // Visual Viewport keyboard handling — keep the iframe size
+        // CONSTANT when the soft keyboard appears (so xterm.js doesn't
+        // re-fit and repaint). The bottom-panel (status + quick-keys +
+        // input-bar) is position: fixed and translates up by the
+        // keyboard height via the --keyboard-height CSS var.
+        // The terminal-wrap is position: absolute with bottom = the
+        // measured --bottom-panel-height, so it stays constant size
+        // regardless of keyboard state.
+        // ============================================================
+        (function setupViewport() {{
+            const root = document.documentElement;
+            const bottomPanel = document.getElementById('bottomPanel');
+            function update() {{
+                const vv = window.visualViewport;
+                if (vv) {{
+                    const kh = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+                    root.style.setProperty('--keyboard-height', kh + 'px');
+                }}
+                if (bottomPanel) {{
+                    root.style.setProperty('--bottom-panel-height', bottomPanel.offsetHeight + 'px');
+                }}
+            }}
+            if (window.visualViewport) {{
+                window.visualViewport.addEventListener('resize', update);
+                window.visualViewport.addEventListener('scroll', update);
+            }}
+            window.addEventListener('resize', update);
+            // Observe textarea/quick-keys/status-bar growth via the panel itself
+            if (window.ResizeObserver && bottomPanel) {{
+                const ro = new ResizeObserver(update);
+                ro.observe(bottomPanel);
+            }}
+            // Initial + a deferred call so layout has settled
+            update();
+            setTimeout(update, 100);
+        }})();
+
+        // ============================================================
+        // Pull-to-refresh + edge-swipe drawer (document-level capture).
+        // Captures touch BEFORE the scroll overlay so its handlers
+        // don't fire on these gestures. Visual indicator at top for
+        // pull-to-refresh; drawer slides in on edge swipe.
+        // ============================================================
+        (function setupPageGestures() {{
+            const PULL_THRESHOLD_PX = 80;
+            const EDGE_SWIPE_START_PX = 24;
+            const EDGE_SWIPE_THRESHOLD_PX = 60;
+            const TOP_GRAB_PX = 30;
+            const indicator = document.getElementById('pullIndicator');
+            let startX = 0, startY = 0;
+            let mode = null;  // null | 'pull-candidate' | 'pull' | 'edge-candidate' | 'edge'
+            let lastDy = 0;
+
+            function reset() {{
+                mode = null;
+                lastDy = 0;
+                if (indicator) indicator.classList.remove('visible');
+            }}
+
+            document.addEventListener('touchstart', (e) => {{
+                if (e.touches.length !== 1) {{ reset(); return; }}
+                const t = e.touches[0];
+                startX = t.clientX;
+                startY = t.clientY;
+                lastDy = 0;
+                // Don't trigger gestures when drawer / sheet / copy overlay is up
+                const drawer = document.getElementById('drawer');
+                const sheet = document.getElementById('skillsSheet');
+                const copy = document.getElementById('copyOverlay');
+                if ((drawer && drawer.classList.contains('open')) ||
+                    (sheet && sheet.classList.contains('open')) ||
+                    (copy && copy.classList.contains('active'))) {{
+                    mode = null;
+                    return;
+                }}
+                if (startX < EDGE_SWIPE_START_PX) mode = 'edge-candidate';
+                else if (startY < TOP_GRAB_PX) mode = 'pull-candidate';
+                else mode = null;
+            }}, {{ capture: true, passive: true }});
+
+            document.addEventListener('touchmove', (e) => {{
+                if (!mode) return;
+                if (e.touches.length !== 1) {{ reset(); return; }}
+                const t = e.touches[0];
+                const dx = t.clientX - startX;
+                const dy = t.clientY - startY;
+                if (mode === 'edge-candidate') {{
+                    if (dx > 20 && Math.abs(dy) < 40) {{
+                        mode = 'edge';
+                        e.stopPropagation();
+                    }} else if (Math.abs(dy) > 30) {{
+                        mode = null;
+                    }}
+                }} else if (mode === 'pull-candidate') {{
+                    if (dy > 20 && Math.abs(dx) < 40) {{
+                        mode = 'pull';
+                        e.stopPropagation();
+                    }} else if (Math.abs(dx) > 30 || dy < -10) {{
+                        mode = null;
+                    }}
+                }}
+                if (mode === 'pull') {{
+                    lastDy = dy;
+                    e.stopPropagation();
+                    e.preventDefault();
+                    if (indicator) {{
+                        indicator.textContent = (dy >= PULL_THRESHOLD_PX)
+                            ? '↻ release to refresh'
+                            : 'pull to refresh';
+                        indicator.classList.add('visible');
+                    }}
+                }} else if (mode === 'edge') {{
+                    e.stopPropagation();
+                }}
+            }}, {{ capture: true, passive: false }});
+
+            document.addEventListener('touchend', (e) => {{
+                if (mode === 'edge') {{
+                    e.stopPropagation();
+                    openDrawer();
+                }} else if (mode === 'pull') {{
+                    e.stopPropagation();
+                    if (lastDy >= PULL_THRESHOLD_PX) {{
+                        reconnectAll();
+                        showToast('refreshing…', 1500);
+                    }}
+                }}
+                reset();
+            }}, {{ capture: true, passive: true }});
+
+            document.addEventListener('touchcancel', () => {{ reset(); }}, {{ capture: true }});
+        }})();
+
         input.focus();
     </script>
 </body>
@@ -1508,7 +1911,12 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.get("/tmux/windows")
 async def list_windows():
-    """List tmux windows in the claude session. Each is a separate CC session."""
+    """List tmux windows in the claude session. Each is a separate CC session.
+
+    For windows that are red (ready=True), also captures the last non-blank
+    line of the pane so the drawer can surface 'what's it waiting on?' inline.
+    Only captures for ready windows to keep the polling cost bounded — busy
+    sessions change every render anyway and a preview would be noise."""
     result = subprocess.run(
         [TMUX, "list-windows", "-t", TMUX_SESSION,
          "-F", "#{window_index}|#{window_name}|#{window_active}"],
@@ -1522,14 +1930,53 @@ async def list_windows():
         if len(parts) >= 3:
             sid, status = find_cc_session_for_window(parts[1])
             ready = check_session_ready(sid, status or "idle") if sid else False
-            windows.append({
+            entry = {
                 "index": int(parts[0]),
                 "name": parts[1],
                 "active": parts[2] == "1",
                 "ready": ready,
                 "status": status or "idle",
-            })
+            }
+            if ready:
+                try:
+                    cap = subprocess.run(
+                        [TMUX, "capture-pane", "-p", "-t",
+                         f"{TMUX_SESSION}:{entry['index']}"],
+                        capture_output=True, text=True, timeout=2,
+                    )
+                    last = ""
+                    for ln in reversed(cap.stdout.split("\n")):
+                        s = ln.strip()
+                        if s:
+                            last = s
+                            break
+                    # Truncate from the right so the prompt tail is preserved
+                    entry["last_line"] = last[-80:] if last else ""
+                except (subprocess.SubprocessError, OSError):
+                    entry["last_line"] = ""
+            windows.append(entry)
     return {"windows": windows}
+
+
+@app.get("/skills")
+async def list_skills():
+    """Enumerate ~/.claude/skills/ subdirectory names, alphabetized.
+
+    Each subdirectory is a user-defined skill (an SKILL.md plus optional
+    helpers). The phone wrapper's long-press-/ sheet displays this list
+    so John can fire any custom slash command without typing it on the
+    phone keyboard. Hidden dirs and files are excluded."""
+    skills_dir = Path.home() / ".claude" / "skills"
+    if not skills_dir.exists() or not skills_dir.is_dir():
+        return {"skills": []}
+    try:
+        names = sorted(
+            p.name for p in skills_dir.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        )
+    except OSError:
+        names = []
+    return {"skills": names}
 
 
 @app.post("/tmux/new")
