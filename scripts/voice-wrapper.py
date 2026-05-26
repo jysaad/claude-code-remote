@@ -665,12 +665,6 @@ async def index():
             white-space: nowrap;
             padding-right: 8px;
         }}
-        .session-row .idx {{
-            color: #666;
-            font-size: 11px;
-            font-family: Menlo, monospace;
-            margin-right: 8px;
-        }}
         .session-row .row-close {{
             background: none;
             border: none;
@@ -719,7 +713,7 @@ async def index():
     </div>
     <div class="container">
         <div class="terminal-wrap">
-            <iframe class="terminal-frame" src="about:blank"></iframe>
+            <iframe class="terminal-frame" src="about:blank" tabindex="-1"></iframe>
             <div class="touch-scroll-overlay" id="scrollOverlay"></div>
             <div class="scroll-hint" id="scrollHint">scrolling</div>
         </div>
@@ -746,7 +740,8 @@ async def index():
             <textarea id="cmd" rows="1"
                       placeholder="Dictate or type here..."
                       autocomplete="off"
-                      autocorrect="on"
+                      autocorrect="off"
+                      autocapitalize="off"
                       enterkeyhint="send"></textarea>
             <button onclick="sendText()">Send</button>
         </div>
@@ -760,10 +755,24 @@ async def index():
         const input = document.getElementById('cmd');
         const UPLOAD_DIR = '/tmp/claude-uploads/';
 
+        // Track typing activity so reconnectDebounced can suppress iframe
+        // reloads while the user is composing. Reload mid-typing steals focus
+        // from the textarea (xterm.js inside the iframe grabs focus on boot)
+        // and corrupts Gboard's IME state — symptoms: cursor jumps to the
+        // terminal, flicker, phantom words after picking from the word chooser.
+        let lastInputAt = 0;
+        let isComposing = false;
+
         // Auto-resize textarea as content grows
         input.addEventListener('input', () => {{
+            lastInputAt = Date.now();
             input.style.height = 'auto';
             input.style.height = Math.min(input.scrollHeight, 100) + 'px';
+        }});
+        input.addEventListener('compositionstart', () => {{ isComposing = true; }});
+        input.addEventListener('compositionend', () => {{
+            isComposing = false;
+            lastInputAt = Date.now();
         }});
 
         // Enter sends, Shift+Enter adds newline
@@ -867,7 +876,6 @@ async def index():
                         : (w.ready) ? '<span class="ready-dot">●</span>'
                         : '';
                     row.innerHTML = `
-                        <span class="idx">${{w.index}}</span>
                         <span class="name">${{escapeHtml(w.name)}}</span>
                         ${{dot}}
                         <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
@@ -1159,6 +1167,10 @@ async def index():
         function reconnectDebounced() {{
             const now = Date.now();
             if (now - __lastReconnectAt < 1500) return;
+            // Suppress while user is actively typing — see input handler comment.
+            if (isComposing) return;
+            if (document.activeElement === input) return;
+            if (now - lastInputAt < 5000) return;
             __lastReconnectAt = now;
             reconnectAll();
         }}
