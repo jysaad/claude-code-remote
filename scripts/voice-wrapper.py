@@ -262,17 +262,6 @@ def check_session_ready(sid: str, curr_status: str) -> bool:
     return ready_file.exists()
 
 
-def clear_session_ready(sid: str):
-    """Drop the ready flag — called when the user taps a session in the
-    drawer (i.e., has circled back). Idempotent."""
-    if not sid:
-        return
-    try:
-        (SESSION_STATE_DIR / f"ready-{sid}").unlink()
-    except FileNotFoundError:
-        pass
-
-
 def find_transcript_path(sid: str):
     """Find the .jsonl transcript for a Claude Code session id by globbing
     ~/.claude/projects/*/<sid>.jsonl. Returns None if not found."""
@@ -675,7 +664,8 @@ async def index():
             cursor: pointer;
         }}
         .session-row .row-close:active {{ color: #f55; }}
-        .session-row .ready-dot {{
+        .session-row .ready-dot,
+        .menu-btn .ready-dot {{
             color: #ff4040;
             font-size: 12px;
             margin-right: 10px;
@@ -689,7 +679,8 @@ async def index():
             line-height: 1;
             animation: dot-blink 1s ease-in-out infinite;
         }}
-        .menu-btn .thinking-dot {{
+        .menu-btn .thinking-dot,
+        .menu-btn .ready-dot {{
             margin-right: 6px;
             font-size: 11px;
         }}
@@ -736,6 +727,7 @@ async def index():
             <button class="menu-btn" onclick="openDrawer()" aria-label="Menu">
                 <span class="icon">&#9776;</span>
                 <span class="thinking-dot" id="activeThinking" style="display:none">&#9679;</span>
+                <span class="ready-dot" id="activeReady" style="display:none">&#9679;</span>
                 <span class="active-name" id="activeName">…</span>
             </button>
             <textarea id="cmd" rows="1"
@@ -870,21 +862,31 @@ async def index():
                 const list = document.getElementById('sessionList');
                 const activeNameEl = document.getElementById('activeName');
                 const activeThinkingEl = document.getElementById('activeThinking');
+                const activeReadyEl = document.getElementById('activeReady');
                 if (!data.windows || !data.windows.length) {{
                     list.innerHTML = '<div class="empty">No sessions</div>';
                     activeNameEl.textContent = '…';
                     if (activeThinkingEl) activeThinkingEl.style.display = 'none';
+                    if (activeReadyEl) activeReadyEl.style.display = 'none';
                     return;
                 }}
                 list.innerHTML = '';
                 let activeLabel = '';
-                let activeBusy = false;
+                // Aggregate across ALL sessions for the menu-button badge:
+                // busy beats ready beats nothing. Drawer-closed glance-spot.
+                let anyBusy = false;
+                let anyReady = false;
                 for (const w of data.windows) {{
-                    if (w.active) {{ activeLabel = w.name; activeBusy = (w.status === 'busy'); }}
+                    if (w.active) {{ activeLabel = w.name; }}
+                    if (w.status === 'busy') anyBusy = true;
+                    if (w.ready) anyReady = true;
                     const row = document.createElement('div');
                     row.className = 'session-row' + (w.active ? ' active' : '');
-                    const dot = w.active ? ''
-                        : (w.status === 'busy') ? '<span class="thinking-dot">●</span>'
+                    // Per spec: every session shows a dot when busy or ready,
+                    // INCLUDING the active row. Red persists until the
+                    // session goes busy again (cleared only by check_session_ready
+                    // server-side, never by tap/select/view).
+                    const dot = (w.status === 'busy') ? '<span class="thinking-dot">●</span>'
                         : (w.ready) ? '<span class="ready-dot">●</span>'
                         : '';
                     row.innerHTML = `
@@ -925,7 +927,8 @@ async def index():
                     list.appendChild(row);
                 }}
                 activeNameEl.textContent = activeLabel || '…';
-                if (activeThinkingEl) activeThinkingEl.style.display = activeBusy ? '' : 'none';
+                if (activeThinkingEl) activeThinkingEl.style.display = anyBusy ? '' : 'none';
+                if (activeReadyEl) activeReadyEl.style.display = (!anyBusy && anyReady) ? '' : 'none';
             }} catch (err) {{
                 console.error('refreshSessions failed:', err);
             }}
@@ -1561,22 +1564,17 @@ async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
 
 @app.post("/tmux/select")
 async def select_window(payload: WindowIndex):
-    """Switch the active tmux window — iframe will show its content."""
+    """Switch the active tmux window — iframe will show its content.
+
+    Note: deliberately does NOT clear the session's ready flag. Per spec, a
+    red 'waiting on you' dot persists until the session goes busy again
+    (Claude starts a new turn). Tapping, viewing, or selecting a session
+    is no longer an acknowledgment gesture — the loop closes when work
+    resumes, not when you look at it."""
     subprocess.run(
         [TMUX, "select-window", "-t", f"{TMUX_SESSION}:{payload.index}"],
         timeout=5,
     )
-    # Tapping a session counts as circling back — drop its ready flag so
-    # the red dot doesn't linger after acknowledgment.
-    name_result = subprocess.run(
-        [TMUX, "display-message", "-p", "-t",
-         f"{TMUX_SESSION}:{payload.index}", "#{window_name}"],
-        capture_output=True, text=True, timeout=5,
-    )
-    name = name_result.stdout.strip()
-    if name:
-        sid, _ = find_cc_session_for_window(name)
-        clear_session_ready(sid)
     return {"status": "selected", "index": payload.index}
 
 
