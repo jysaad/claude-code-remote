@@ -660,6 +660,19 @@ async def index():
             cursor: pointer;
         }}
         .new-session-btn:active {{ background: #005bb5; }}
+        .new-terminal-btn {{
+            margin: 6px 16px 12px;
+            padding: 12px;
+            background: #2d2d2d;
+            color: #cfcfcf;
+            border: 1px solid #444;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            font-family: Menlo, monospace;
+            cursor: pointer;
+        }}
+        .new-terminal-btn:active {{ background: #1a1a1a; }}
         .session-list {{
             flex: 1;
             overflow-y: auto;
@@ -866,6 +879,7 @@ async def index():
         <div class="session-list" id="sessionList">
             <div class="empty">Loading…</div>
         </div>
+        <button class="new-terminal-btn" onclick="promptNewTerminal()">&gt;_ New terminal</button>
     </div>
     <div class="container">
         <div class="terminal-wrap">
@@ -1066,7 +1080,8 @@ async def index():
                     }});
                 }} catch (err) {{ /* silent */ }}
             }}
-            input.focus();
+            // No input.focus() — the scroll button is a "look at terminal"
+            // gesture, not typing. Don't pop the keyboard from a scroll tap.
             // Refresh state ASAP so any server-side correction lands fast.
             setTimeout(refreshSessions, 200);
         }}
@@ -1225,6 +1240,34 @@ async def index():
                 closeDrawer();
             }} catch (err) {{
                 console.error('new session failed:', err);
+            }}
+        }}
+
+        async function promptNewTerminal() {{
+            // Spawn a tmux window running a plain shell (NOT claude). Used
+            // for sudo / admin tasks that don't fit a Claude session. Auto-
+            // selects the new window so the user lands in it immediately.
+            try {{
+                const resp = await fetch('/tmux/new-terminal', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: '{{}}'
+                }});
+                const data = await resp.json().catch(() => ({{}}));
+                if (data.session_created) {{
+                    reloadTerminal();
+                }}
+                if (typeof data.index === 'number') {{
+                    await fetch('/tmux/select', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ index: data.index }})
+                    }});
+                }}
+                setTimeout(refreshSessions, 400);
+                closeDrawer();
+            }} catch (err) {{
+                console.error('new terminal failed:', err);
             }}
         }}
 
@@ -1564,9 +1607,9 @@ async def index():
 
             overlay.addEventListener('touchend', () => {{
                 isTouching = false;
-                if (movementMag < TAP_THRESHOLD_PX) {{
-                    input.focus();
-                }}
+                // Deliberately NO input.focus() here. Per John: tapping the
+                // terminal should never pop the keyboard. Only tapping the
+                // textarea itself (next to Send) brings the keyboard up.
             }}, {{ passive: true }});
 
             overlay.addEventListener('touchcancel', () => {{
@@ -1583,11 +1626,9 @@ async def index():
                 if (lines !== 0) queue(lines);
             }}, {{ passive: false }});
 
-            // Click anywhere on the terminal pane → focus the textarea.
-            // Touch taps already focus via touchend above; this covers
-            // desktop mouse clicks (synthetic click fires on touch too,
-            // but input.focus() on the already-focused element is a no-op).
-            overlay.addEventListener('click', () => input.focus());
+            // No click handler — per John, clicking/tapping the terminal
+            // must NOT pop the keyboard. The textarea is the explicit
+            // typing surface; tap it directly to focus.
         }})();
 
         // ============================================================
@@ -2111,6 +2152,51 @@ async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
     # so the statusbar's Sessions: segment uses the same label as the drawer.
     background_tasks.add_task(label_new_session, before_pids, name)
     return {"status": "created", "name": name, "session_created": not has_session}
+
+
+@app.post("/tmux/new-terminal")
+async def new_terminal_window():
+    """Create a new tmux window running an interactive shell (NOT claude).
+    Used for the "Terminal" button in the sidebar — gives a real TTY for
+    sudo / admin tasks that don't fit a Claude session. Skips the claude
+    session-overrides bookkeeping (that's claude-only). Returns the new
+    window's index so the client can auto-select it."""
+    name = sanitize_window_name(f"term-{int(time.time()) % 10000:04d}")
+    has_session = subprocess.run(
+        [TMUX, "has-session", "-t", TMUX_SESSION],
+        capture_output=True, timeout=5,
+    ).returncode == 0
+    # No command arg => tmux uses default-shell (inherits $SHELL).
+    if has_session:
+        subprocess.run(
+            [TMUX, "new-window", "-t", f"{TMUX_SESSION}:", "-n", name],
+            timeout=5,
+        )
+    else:
+        subprocess.run(
+            [TMUX, "new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(Path.home())],
+            timeout=5,
+        )
+    # Look up the new window's index so the client can switch to it.
+    list_result = subprocess.run(
+        [TMUX, "list-windows", "-t", TMUX_SESSION, "-F", "#{window_index}\t#{window_name}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    new_index = None
+    for line in list_result.stdout.strip().split("\n"):
+        if "\t" in line:
+            idx_str, w_name = line.split("\t", 1)
+            if w_name == name:
+                try:
+                    new_index = int(idx_str)
+                except ValueError:
+                    pass
+    return {
+        "status": "created",
+        "name": name,
+        "session_created": not has_session,
+        "index": new_index,
+    }
 
 
 @app.post("/tmux/select")
