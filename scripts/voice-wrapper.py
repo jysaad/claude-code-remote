@@ -1025,7 +1025,14 @@ async def index():
             }}
         }}
         async function toggleScroll() {{
-            if (inCopyMode) {{
+            // Optimistic: flip the local flag immediately so the emoji and
+            // gesture gates update without waiting for the server round-trip.
+            // refreshSessions (scheduled below) will reconcile if the server
+            // disagrees for any reason.
+            const wasEnabled = inCopyMode;
+            inCopyMode = !wasEnabled;
+            updateScrollBtn();
+            if (wasEnabled) {{
                 try {{ await fetch('/scroll/exit', {{ method: 'POST' }}); }}
                 catch (err) {{ /* silent */ }}
             }} else {{
@@ -1038,8 +1045,7 @@ async def index():
                 }} catch (err) {{ /* silent */ }}
             }}
             input.focus();
-            // Refresh state ASAP so the button label flips without waiting
-            // for the 3s poll cycle.
+            // Refresh state ASAP so any server-side correction lands fast.
             setTimeout(refreshSessions, 200);
         }}
         document.getElementById('scrollBtn')?.addEventListener('click', toggleScroll);
@@ -1495,6 +1501,10 @@ async def index():
 
             overlay.addEventListener('touchmove', (e) => {{
                 if (!isTouching || e.touches.length !== 1) return;
+                // Swipe-to-scroll is OFF by default and only activates when
+                // the user explicitly enables it via the ⏫ button. Lets
+                // pull-to-refresh and edge-swipe own gestures from cold.
+                if (!inCopyMode) return;
                 e.preventDefault();
                 const y = e.touches[0].clientY;
                 // Natural mobile scrolling: drag finger DOWN reveals older
@@ -1523,7 +1533,10 @@ async def index():
             }}, {{ passive: true }});
 
             // Desktop / trackpad wheel: same overlay, translate wheel delta.
+            // Also gated on inCopyMode (the explicit scroll toggle) so the
+            // wheel doesn't randomly enter copy mode on desktop browsers.
             overlay.addEventListener('wheel', (e) => {{
+                if (!inCopyMode) return;
                 e.preventDefault();
                 const lines = Math.round(-e.deltaY / PIXELS_PER_LINE);
                 if (lines !== 0) queue(lines);
@@ -1687,7 +1700,10 @@ async def index():
                     return;
                 }}
                 if (startX < EDGE_SWIPE_START_PX) mode = 'edge-candidate';
-                else if (startY < TOP_GRAB_PX) mode = 'pull-candidate';
+                // Pull-to-refresh only when scroll mode is OFF — when ON, the
+                // user explicitly opted into terminal scrolling and gestures
+                // at the top belong to that, not refresh.
+                else if (startY < TOP_GRAB_PX && !inCopyMode) mode = 'pull-candidate';
                 else mode = null;
             }}, {{ capture: true, passive: true }});
 
