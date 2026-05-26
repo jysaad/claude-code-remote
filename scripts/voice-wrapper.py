@@ -720,6 +720,7 @@ async def index():
         <div class="status-bar" id="statusBar"></div>
         <div class="quick-keys">
             <button onclick="sendKey('Escape')">Esc</button>
+            <button onclick="exitScroll()" title="Exit scroll mode (back to live, never interrupts Claude)">&#9196;</button>
             <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
             <button onclick="sendKey('/')">/</button>
             <button onclick="sendKey('Up')">&#9650;</button>
@@ -823,6 +824,17 @@ async def index():
             }} catch (err) {{
                 console.error('Key send failed:', err);
             }}
+        }}
+
+        // Exit tmux copy/view mode without forwarding any key to the
+        // underlying program. Safe to mash — when not in copy-mode, the
+        // server-side cancel is a no-op (stderr swallowed). Use this
+        // instead of Esc when all you want is to stop scrolling.
+        async function exitScroll() {{
+            try {{
+                await fetch('/scroll/exit', {{ method: 'POST' }});
+            }} catch (err) {{ /* silent */ }}
+            input.focus();
         }}
 
         async function copyPane() {{
@@ -1200,7 +1212,7 @@ async def index():
             if (!overlay) return;
             const PIXELS_PER_LINE = 14;
             const THROTTLE_MS = 40;
-            const TAP_THRESHOLD_PX = 8;
+            const TAP_THRESHOLD_PX = 16;
             let lastY = 0;
             let accumulated = 0;
             let movementMag = 0;
@@ -1281,6 +1293,12 @@ async def index():
                 const lines = Math.round(-e.deltaY / PIXELS_PER_LINE);
                 if (lines !== 0) queue(lines);
             }}, {{ passive: false }});
+
+            // Click anywhere on the terminal pane → focus the textarea.
+            // Touch taps already focus via touchend above; this covers
+            // desktop mouse clicks (synthetic click fires on touch too,
+            // but input.focus() on the already-focused element is a no-op).
+            overlay.addEventListener('click', () => input.focus());
         }})();
 
         input.focus();
@@ -1403,6 +1421,16 @@ async def send_key(payload: KeyInput):
         timeout=5,
     )
     return {"status": "sent"}
+
+
+@app.post("/scroll/exit")
+async def scroll_exit():
+    """Exit tmux copy/view mode without forwarding any key to the underlying
+    program. Cannot interrupt Claude under any circumstance — use this as the
+    safe alternative to the gated /key Escape handler when the only intent is
+    to stop scrolling. No-op when not in copy mode."""
+    _exit_copy_mode()
+    return {"status": "ok"}
 
 
 @app.get("/status")
