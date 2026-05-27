@@ -83,6 +83,7 @@ ttyd \
     -t cursorStyle=block \
     -t scrollback=10000 \
     -t disableLeaveAlert=true \
+    -t disableResizeOverlay=true \
     -t 'fontFamily="Menlo, Monaco, Consolas, monospace, Apple Color Emoji, Segoe UI Emoji"' \
     "$SCRIPT_DIR/tmux-attach.sh" \
     >> "$LOG_DIR/ttyd.log" 2>&1 &
