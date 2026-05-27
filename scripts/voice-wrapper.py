@@ -1894,7 +1894,14 @@ async def index():
             function readViewportKh() {{
                 const vv = window.visualViewport;
                 if (!vv) return 0;
-                return Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+                // Keyboard height = layout viewport - visual viewport. Do NOT
+                // subtract vv.offsetTop — Android Chrome scrolls the layout
+                // viewport during/after keyboard transitions to keep the focus
+                // target in view, and offsetTop changes on each scroll. The
+                // subtraction conflated keyboard motion with scroll motion,
+                // making readViewportKh return shifting values that triggered
+                // extra snaps via the visualViewport.scroll listener.
+                return Math.max(0, Math.round(window.innerHeight - vv.height));
             }}
             function updateBottomPanelVar() {{
                 if (bottomPanel) {{
@@ -1952,7 +1959,13 @@ async def index():
 
             if (window.visualViewport) {{
                 window.visualViewport.addEventListener('resize', onViewportChange);
-                window.visualViewport.addEventListener('scroll', onViewportChange);
+                // No 'scroll' listener: visualViewport.scroll fires during
+                // browser auto-scroll-to-keep-focus-visible, often AFTER the
+                // keyboard slide completes. Each scroll fired applyViewport
+                // again and (combined with the offsetTop subtraction that's
+                // now also gone) drove the "small move at the end" John
+                // reported. Resize is the only relevant signal for keyboard
+                // appearance/dismissal.
             }}
             window.addEventListener('resize', onViewportChange);
             if (window.ResizeObserver && bottomPanel) {{
