@@ -388,8 +388,15 @@ async def index():
             top: 0;
             left: 0;
             right: 0;
-            bottom: var(--bottom-panel-height, 110px);
+            bottom: 20vh;
             min-height: 0;
+            /* Iframe slides up in lockstep with the keyboard so its bottom
+               rows (recent claude output) stay visible. translateZ keeps it
+               on the compositor; contain isolates paint. Iframe SIZE doesn't
+               change — xterm.js never re-fits. The translate is JS-animated
+               via --keyboard-height so it's one smooth slide, not snaps. */
+            transform: translate3d(0, calc(-1 * var(--keyboard-height, 0px)), 0);
+            contain: layout paint;
         }}
         .bottom-panel {{
             position: fixed;
@@ -398,7 +405,14 @@ async def index():
             bottom: var(--keyboard-height, 0px);
             background: #1a1a1a;
             z-index: 20;
-            transition: bottom 0.15s ease-out;
+            /* No CSS transition — the rAF poll in setupViewport drives per-
+               frame updates of --keyboard-height during the keyboard animation
+               (Android Chrome fires visualViewport.resize only at start + end,
+               but .height itself updates smoothly). The panel snaps to each
+               rAF tick = tracks the keyboard frame-by-frame. Adding a CSS
+               transition on top would cause the panel to lag behind the rAF
+               updates (each frame's snap starts a new transition mid-flight,
+               panel never catches up). */
         }}
         .terminal-frame {{
             border: none;
@@ -450,16 +464,16 @@ async def index():
         }}
         .scroll-hint.visible {{ opacity: 1; }}
         .status-bar {{
-            padding: 6px 8px;
+            padding: 4px 8px;
             background: #1c1c1c;
             color: #d0d0d0;
             font-family: 'Menlo', monospace;
-            font-size: 12px;
-            line-height: 1.5;
+            font-size: 11px;
+            line-height: 1.4;
             border-top: 1px solid #2a2a2a;
             white-space: pre-wrap;
             word-break: break-word;
-            max-height: 120px;
+            max-height: 64px;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
         }}
@@ -467,14 +481,14 @@ async def index():
         .quick-keys {{
             display: flex;
             gap: 4px;
-            padding: 4px 6px;
+            padding: 3px 6px;
             background: #252525;
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
         }}
         .quick-keys button {{
-            padding: 8px 14px;
-            font-size: 14px;
+            padding: 6px 12px;
+            font-size: 13px;
             font-family: 'Menlo', monospace;
             border: 1px solid #555;
             border-radius: 4px;
@@ -490,13 +504,13 @@ async def index():
         .input-bar {{
             display: flex;
             gap: 6px;
-            padding: 6px;
+            padding: 4px 6px;
             background: #2d2d2d;
             border-top: 1px solid #444;
         }}
         .input-bar textarea {{
             flex: 1;
-            padding: 10px 12px;
+            padding: 8px 10px;
             font-size: 16px;
             border: 1px solid #555;
             border-radius: 8px;
@@ -505,8 +519,8 @@ async def index():
             outline: none;
             resize: none;
             overflow-y: hidden;
-            min-height: 42px;
-            max-height: 100px;
+            min-height: 38px;
+            max-height: 80px;
             line-height: 1.4;
             font-family: -apple-system, system-ui, sans-serif;
         }}
@@ -673,6 +687,21 @@ async def index():
             cursor: pointer;
         }}
         .new-terminal-btn:active {{ background: #1a1a1a; }}
+        .drawer-settings-btn {{
+            margin: 0 16px 12px;
+            padding: 10px 12px;
+            background: transparent;
+            color: #888;
+            border: 1px solid #333;
+            border-radius: 8px;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }}
+        .drawer-settings-btn:active {{ background: #1a1a1a; color: #ccc; }}
+        .drawer-settings-btn .gear {{ font-size: 14px; }}
         .session-list {{
             flex: 1;
             overflow-y: auto;
@@ -694,16 +723,6 @@ async def index():
         .session-row .row-main {{
             display: flex;
             align-items: center;
-        }}
-        .session-row .row-preview {{
-            margin-top: 4px;
-            color: #888;
-            font-size: 11px;
-            font-family: Menlo, monospace;
-            line-height: 1.3;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
         }}
         .session-row.active {{
             background: #143a5e;
@@ -729,7 +748,7 @@ async def index():
         .session-row .row-close:active {{ color: #f55; }}
         .session-row .ready-dot,
         .menu-btn .ready-dot {{
-            color: #ff4040;
+            color: #34c759;
             font-size: 12px;
             margin-right: 10px;
             line-height: 1;
@@ -804,11 +823,118 @@ async def index():
             border-radius: 12px 12px 0 0;
             z-index: 300;
             transform: translateY(110%);
-            transition: transform 0.22s ease, bottom 0.15s ease-out;
+            /* No `bottom` transition: --keyboard-height is rAF-rewritten every
+               frame during the keyboard slide; a CSS bottom transition would
+               re-target each frame and leak sub-pixel compositor work that
+               flashed the sheet during focus. Same fix .bottom-panel got
+               2026-05-26 (rAF-driven keyboard tracking). */
+            transition: transform 0.22s ease;
             display: flex;
             flex-direction: column;
+            /* Closed sheet can't receive any pointer events, so a transient
+               mispaint never becomes a tap surface. */
+            pointer-events: none;
         }}
-        .skills-sheet.open {{ transform: translateY(0); }}
+        .skills-sheet.open {{
+            transform: translateY(0);
+            pointer-events: auto;
+        }}
+        /* Settings sheet — same shape as skills-sheet, also bound to
+           --keyboard-height with NO bottom transition (rAF-driven, see
+           skills-sheet rule for the why). */
+        .settings-backdrop {{
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 290;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.18s ease;
+        }}
+        .settings-backdrop.active {{
+            opacity: 1;
+            pointer-events: auto;
+        }}
+        .settings-sheet {{
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: var(--keyboard-height, 0px);
+            max-height: 70vh;
+            background: #1f1f1f;
+            border-top: 1px solid #444;
+            border-radius: 12px 12px 0 0;
+            z-index: 300;
+            transform: translateY(110%);
+            transition: transform 0.22s ease;
+            display: flex;
+            flex-direction: column;
+            pointer-events: none;
+        }}
+        .settings-sheet.open {{
+            transform: translateY(0);
+            pointer-events: auto;
+        }}
+        .settings-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #333;
+            color: #fff;
+            font-weight: 600;
+            font-size: 15px;
+        }}
+        .settings-header .close-x {{
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 24px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 4px;
+        }}
+        .settings-body {{
+            padding: 18px 20px 28px;
+            overflow-y: auto;
+        }}
+        .settings-row {{ margin-bottom: 24px; }}
+        .settings-row:last-child {{ margin-bottom: 0; }}
+        .settings-label {{
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 10px;
+        }}
+        .settings-label .label-text {{
+            font-weight: 600;
+            color: #fff;
+            font-size: 14px;
+        }}
+        .settings-label .label-value {{
+            color: #aaa;
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
+        }}
+        .settings-slider {{
+            width: 100%;
+            accent-color: #007aff;
+            margin: 0;
+            height: 28px;
+        }}
+        .settings-ends {{
+            display: flex;
+            justify-content: space-between;
+            margin-top: 4px;
+            color: #777;
+            font-size: 11px;
+        }}
+        .settings-hint {{
+            margin-top: 12px;
+            color: #888;
+            font-size: 12px;
+            line-height: 1.4;
+        }}
         .skills-header {{
             display: flex;
             justify-content: space-between;
@@ -880,6 +1006,10 @@ async def index():
             <div class="empty">Loading…</div>
         </div>
         <button class="new-terminal-btn" onclick="promptNewTerminal()">&gt;_ New terminal</button>
+        <button class="drawer-settings-btn" onclick="openSettingsSheet()">
+            <span class="gear">&#9881;</span>
+            <span>Settings</span>
+        </button>
     </div>
     <div class="container">
         <div class="terminal-wrap">
@@ -933,6 +1063,28 @@ async def index():
             <div class="skills-empty">Loading…</div>
         </div>
     </div>
+    <div class="settings-backdrop" id="settingsBackdrop" onclick="closeSettingsSheet()"></div>
+    <div class="settings-sheet" id="settingsSheet">
+        <div class="settings-header">
+            <span>Settings</span>
+            <button class="close-x" onclick="closeSettingsSheet()">&times;</button>
+        </div>
+        <div class="settings-body">
+            <div class="settings-row">
+                <div class="settings-label">
+                    <span class="label-text">Scroll sensitivity</span>
+                    <span class="label-value" id="sensValue">14 px/line</span>
+                </div>
+                <input type="range" id="sensSlider" class="settings-slider"
+                       min="5" max="28" step="1" value="14">
+                <div class="settings-ends">
+                    <span>Fast</span>
+                    <span>Precise</span>
+                </div>
+                <div class="settings-hint">Controls how much finger movement is one scroll-line. Lower = a small swipe moves many lines (fast). Higher = each line needs more swipe (precise).</div>
+            </div>
+        </div>
+    </div>
     <div class="copy-overlay" id="copyOverlay">
         <div class="copy-hint">Scroll to read · long-press to select, then Copy</div>
         <pre id="copyText" class="copy-content"></pre>
@@ -941,6 +1093,16 @@ async def index():
     <script>
         const input = document.getElementById('cmd');
         const UPLOAD_DIR = '/tmp/claude-uploads/';
+
+        // Scroll sensitivity (Settings sheet). Script-scope `let` so the slider
+        // can mutate it live without reloading. Read by setupScrollOverlay
+        // (both touch swipe and wheel paths) via closure. Persisted in
+        // localStorage; loaded on init at the bottom of the script.
+        let PIXELS_PER_LINE = 14;
+        const SENS_KEY = 'phoneOS.scrollSensitivity';
+        const SENS_MIN = 5;
+        const SENS_MAX = 28;
+        const SENS_DEFAULT = 14;
 
         // Track typing activity so reconnectDebounced can suppress iframe
         // reloads while the user is composing. Reload mid-typing steals focus
@@ -1043,8 +1205,9 @@ async def index():
 
         // Context-aware scroll button. State synced from /tmux/windows
         // (in_copy_mode). NEVER interrupts Claude under any state.
-        //   not-in-copy-mode → ⏫  tap = enter copy mode + page up
-        //   in-copy-mode     → ⏬  tap = exit copy mode (back to live)
+        //   not-in-copy-mode → ⏫  tap = enter copy mode ONLY (unlock swipe).
+        //                          User then drags at their own pace.
+        //   in-copy-mode     → ⏬  tap = exit copy mode (snap back to live)
         // The Esc button (separate, leftmost) keeps its own gated
         // behavior; this button is the no-mental-load scroll surface
         // for users who don't trust the Esc gating in the heat of work.
@@ -1057,7 +1220,7 @@ async def index():
                 btn.title = 'Exit scroll mode (back to live, never interrupts Claude)';
             }} else {{
                 btn.innerHTML = '&#9195;';  // ⏫
-                btn.title = 'Scroll up (enter scroll mode; never interrupts Claude)';
+                btn.title = 'Unlock swipe-scroll (no jump; never interrupts Claude)';
             }}
         }}
         async function toggleScroll() {{
@@ -1072,13 +1235,12 @@ async def index():
                 try {{ await fetch('/scroll/exit', {{ method: 'POST' }}); }}
                 catch (err) {{ /* silent */ }}
             }} else {{
-                try {{
-                    await fetch('/scroll', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ direction: 'up' }})
-                    }});
-                }} catch (err) {{ /* silent */ }}
+                // /scroll/enter just puts tmux in copy-mode (no page-up).
+                // The swipe-scroll path at the overlay touchmove handler is
+                // gated on inCopyMode and is now the only way to actually
+                // move the buffer — finger control, no surprise jumps.
+                try {{ await fetch('/scroll/enter', {{ method: 'POST' }}); }}
+                catch (err) {{ /* silent */ }}
             }}
             // No input.focus() — the scroll button is a "look at terminal"
             // gesture, not typing. Don't pop the keyboard from a scroll tap.
@@ -1144,21 +1306,15 @@ async def index():
                     // INCLUDING the active row. Red persists until the
                     // session goes busy again (cleared only by check_session_ready
                     // server-side, never by tap/select/view).
-                    const dot = (w.status === 'busy') ? '<span class="thinking-dot">●</span>'
-                        : (w.ready) ? '<span class="ready-dot">●</span>'
-                        : '';
-                    // Output preview: only shown for red (ready) sessions, so
-                    // you can triage what's waiting without entering the row.
-                    const preview = (w.ready && w.last_line)
-                        ? `<div class="row-preview">${{escapeHtml(w.last_line)}}</div>`
-                        : '';
+                    const dot = (w.status === 'busy')
+                        ? '<span class="thinking-dot">●</span>'
+                        : '<span class="ready-dot">●</span>';
                     row.innerHTML = `
                         <div class="row-main">
                             <span class="name">${{escapeHtml(w.name)}}</span>
                             ${{dot}}
                             <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
                         </div>
-                        ${{preview}}
                     `;
                     let pressTimer = null;
                     let longPressFired = false;
@@ -1535,7 +1691,9 @@ async def index():
             const overlay = document.getElementById('scrollOverlay');
             const hint = document.getElementById('scrollHint');
             if (!overlay) return;
-            const PIXELS_PER_LINE = 14;
+            // PIXELS_PER_LINE is a script-scope `let` set at the top of this
+            // script block so the Settings sheet's sensitivity slider can
+            // mutate it live without reloading. Default 14.
             const THROTTLE_MS = 40;
             const TAP_THRESHOLD_PX = 16;
             let lastY = 0;
@@ -1718,29 +1876,86 @@ async def index():
         (function setupViewport() {{
             const root = document.documentElement;
             const bottomPanel = document.getElementById('bottomPanel');
-            function update() {{
+
+            function readViewportKh() {{
                 const vv = window.visualViewport;
-                if (vv) {{
-                    const kh = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-                    root.style.setProperty('--keyboard-height', kh + 'px');
-                }}
+                if (!vv) return 0;
+                return Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+            }}
+            function updateBottomPanelVar() {{
                 if (bottomPanel) {{
                     root.style.setProperty('--bottom-panel-height', bottomPanel.offsetHeight + 'px');
                 }}
             }}
-            if (window.visualViewport) {{
-                window.visualViewport.addEventListener('resize', update);
-                window.visualViewport.addEventListener('scroll', update);
+
+            // JS-driven smooth interpolation of --keyboard-height. Why not
+            // CSS transition: Android Chrome fires visualViewport.resize only
+            // at the START and END of the keyboard slide (2 snaps, ~250ms
+            // apart). With a CSS transition, the path interpolated by the
+            // browser doesn't match the keyboard's actual animation curve —
+            // particularly visible on dismiss, where the panel keeps sliding
+            // after the keyboard's already gone. Why not rAF-poll the live
+            // visualViewport.height: that value also only updates at the 2
+            // snap points (the EVENT firing IS the value changing). So
+            // polling the SDK gives the same snap-snap result.
+            // Solution: own the animation in JS. When visualViewport reports
+            // a new height target, ease-out cubic from the current animated
+            // value to the new target over 250 ms (matches iOS keyboard
+            // timing). Re-targeting mid-flight is handled cleanly by
+            // cancelling the previous rAF and starting from the current
+            // position. Both .bottom-panel (bottom) and .terminal-wrap
+            // (transform translateY) bind to --keyboard-height, so they slide
+            // together as one smooth motion.
+            let animFrameId = null;
+            let animStart = 0;
+            let animFrom = 0;
+            let animTo = 0;
+            const ANIM_DURATION_MS = 250;
+            function easeOutCubic(t) {{ return 1 - Math.pow(1 - t, 3); }}
+            function animTick() {{
+                const elapsed = performance.now() - animStart;
+                const progress = Math.min(elapsed / ANIM_DURATION_MS, 1);
+                const eased = easeOutCubic(progress);
+                const current = animFrom + (animTo - animFrom) * eased;
+                root.style.setProperty('--keyboard-height', Math.round(current) + 'px');
+                if (progress < 1) {{
+                    animFrameId = requestAnimationFrame(animTick);
+                }} else {{
+                    animFrameId = null;
+                }}
             }}
-            window.addEventListener('resize', update);
-            // Observe textarea/quick-keys/status-bar growth via the panel itself
+            function animateKeyboard(targetKh) {{
+                const currentStr = getComputedStyle(root).getPropertyValue('--keyboard-height').trim();
+                const current = parseFloat(currentStr) || 0;
+                if (Math.round(current) === targetKh && animFrameId === null) return;
+                if (animFrameId !== null) {{
+                    cancelAnimationFrame(animFrameId);
+                    animFrameId = null;
+                }}
+                animFrom = current;
+                animTo = targetKh;
+                animStart = performance.now();
+                animFrameId = requestAnimationFrame(animTick);
+            }}
+
+            function onViewportChange() {{
+                animateKeyboard(readViewportKh());
+                updateBottomPanelVar();
+            }}
+
+            if (window.visualViewport) {{
+                window.visualViewport.addEventListener('resize', onViewportChange);
+                window.visualViewport.addEventListener('scroll', onViewportChange);
+            }}
+            window.addEventListener('resize', onViewportChange);
             if (window.ResizeObserver && bottomPanel) {{
-                const ro = new ResizeObserver(update);
+                const ro = new ResizeObserver(updateBottomPanelVar);
                 ro.observe(bottomPanel);
             }}
-            // Initial + a deferred call so layout has settled
-            update();
-            setTimeout(update, 100);
+            // Initial sync (no animation needed at page load)
+            root.style.setProperty('--keyboard-height', readViewportKh() + 'px');
+            updateBottomPanelVar();
+            setTimeout(updateBottomPanelVar, 100);
         }})();
 
         // ============================================================
@@ -1844,6 +2059,54 @@ async def index():
 
             document.addEventListener('touchcancel', () => {{ reset(); }}, {{ capture: true }});
         }})();
+
+        // ============================================================
+        // Settings sheet — currently exposes Scroll sensitivity. Loaded
+        // from localStorage on init; the slider mutates PIXELS_PER_LINE
+        // live (script-scope let, used by setupScrollOverlay's swipe +
+        // wheel paths) and writes back on every change.
+        // ============================================================
+        function applySensitivity(value) {{
+            const v = Math.max(SENS_MIN, Math.min(SENS_MAX, parseInt(value) || SENS_DEFAULT));
+            PIXELS_PER_LINE = v;
+            const valueEl = document.getElementById('sensValue');
+            if (valueEl) valueEl.textContent = v + ' px/line';
+            try {{ localStorage.setItem(SENS_KEY, String(v)); }} catch (e) {{ /* private mode */ }}
+        }}
+        function loadSensitivity() {{
+            let stored = SENS_DEFAULT;
+            try {{
+                const raw = localStorage.getItem(SENS_KEY);
+                const parsed = parseInt(raw);
+                if (!isNaN(parsed) && parsed >= SENS_MIN && parsed <= SENS_MAX) stored = parsed;
+            }} catch (e) {{ /* private mode */ }}
+            PIXELS_PER_LINE = stored;
+            const slider = document.getElementById('sensSlider');
+            if (slider) slider.value = stored;
+            const valueEl = document.getElementById('sensValue');
+            if (valueEl) valueEl.textContent = stored + ' px/line';
+        }}
+        function openSettingsSheet() {{
+            // Sync slider to current value (in case storage changed externally
+            // or this is the first open).
+            const slider = document.getElementById('sensSlider');
+            if (slider) slider.value = PIXELS_PER_LINE;
+            const valueEl = document.getElementById('sensValue');
+            if (valueEl) valueEl.textContent = PIXELS_PER_LINE + ' px/line';
+            // Close the drawer if it's open — the settings sheet is a
+            // foreground action, not a drawer subview.
+            closeDrawer();
+            document.getElementById('settingsBackdrop').classList.add('active');
+            document.getElementById('settingsSheet').classList.add('open');
+        }}
+        function closeSettingsSheet() {{
+            document.getElementById('settingsSheet').classList.remove('open');
+            document.getElementById('settingsBackdrop').classList.remove('active');
+        }}
+        document.getElementById('sensSlider')?.addEventListener('input', (e) => {{
+            applySensitivity(e.target.value);
+        }});
+        loadSensitivity();
 
         input.focus();
     </script>
@@ -1974,6 +2237,21 @@ async def scroll_exit():
     safe alternative to the gated /key Escape handler when the only intent is
     to stop scrolling. No-op when not in copy mode."""
     _exit_copy_mode()
+    return {"status": "ok"}
+
+
+@app.post("/scroll/enter")
+async def scroll_enter():
+    """Enter tmux copy mode without scrolling. Unlocks the swipe-scroll path
+    (gated client-side on inCopyMode) so the user can drag at their own pace,
+    instead of the previous behavior which jumped a full page on every ⏫ tap.
+    Pairs with /scroll/exit. Idempotent — tmux copy-mode is a no-op if already
+    in copy mode."""
+    subprocess.run(
+        [TMUX, "copy-mode", "-t", TMUX_SESSION],
+        capture_output=True,
+        timeout=5,
+    )
     return {"status": "ok"}
 
 
@@ -2148,6 +2426,13 @@ async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
             [TMUX, "new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(Path.home()), cmd],
             timeout=5,
         )
+        # Hide tmux's default green status bar — it's noise inside the phone
+        # iframe (window list + clock are already in the wrapper's drawer +
+        # sidecar). Scoped to the claude session so Mac-terminal tmux unaffected.
+        subprocess.run(
+            [TMUX, "set-option", "-t", TMUX_SESSION, "status", "off"],
+            capture_output=True, timeout=5,
+        )
     # Write the friendly name to session-overrides.json once the claude sessionId is known,
     # so the statusbar's Sessions: segment uses the same label as the drawer.
     background_tasks.add_task(label_new_session, before_pids, name)
@@ -2176,6 +2461,11 @@ async def new_terminal_window():
         subprocess.run(
             [TMUX, "new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(Path.home())],
             timeout=5,
+        )
+        # Hide tmux's default green status bar (same reason as /tmux/new above).
+        subprocess.run(
+            [TMUX, "set-option", "-t", TMUX_SESSION, "status", "off"],
+            capture_output=True, timeout=5,
         )
     # Look up the new window's index so the client can switch to it.
     list_result = subprocess.run(
