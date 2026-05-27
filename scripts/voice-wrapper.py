@@ -1902,32 +1902,51 @@ async def index():
                 }}
             }}
 
-            // No JS animation, no CSS transition on the affected properties.
-            // visualViewport.resize fires at the START and END of the
-            // keyboard slide on Android Chrome (sometimes more — Gboard's
-            // suggestion bar can fire a third event with a different height
-            // than the slide start). The previous JS rAF approach (ease-out
-            // cubic, 250 ms) would cancel + re-target on each fresh event;
-            // if the second event reported a SMALLER height than the in-
-            // flight target, the panel + iframe would animate DOWN to the
-            // new value — visible as a "bounce" with black body background
-            // exposed between the panel and the keyboard's actual top edge.
-            // John 2026-05-26: "i just don't know why the keyboard has to
-            // bounce. there is black under keyboard when it bounces and then
-            // it comes back down.. why can't it just go up until it stops
-            // instead of coming back down. makes me dizzy."
-            // Fix: snap --keyboard-height directly on each event. No
-            // interpolation window = no possibility of in-flight cancellation
-            // + reverse direction = no bounce. Trade-off: each event is now
-            // a single-frame jump rather than a 250 ms ease-out, so there's
-            // less "smooth motion" — but the motion was the source of the
-            // perceived bounce, so killing it eliminates the dizziness.
-            // The .bottom-panel and .terminal-wrap remain bound to
-            // --keyboard-height via `bottom` / `transform: translate3d`;
-            // they paint at the new position the moment the variable updates.
+            // Snap-with-secondary-event-filter.
+            //
+            // Android Chrome fires visualViewport.resize at the START and
+            // END of the keyboard slide (sometimes more — Gboard's
+            // suggestion bar settling, keyboard chrome reflow). The two
+            // events often carry slightly different target heights, so
+            // snapping naively to every event produces:
+            //   - First snap: panel jumps to event-1 position (most of
+            //     the motion).
+            //   - ~250 ms later: second snap by ~10–50 px (visible as a
+            //     small "flash + extra move" at the end of each
+            //     transition — what John reported as ruining the
+            //     experience even after the rAF animation was removed).
+            //
+            // Fix: ignore secondary events with SMALL delta within a
+            // SHORT window of the last snap. Treat them as Android's
+            // settle-up noise. Large deltas (real dismiss, keyboard
+            // re-open) always pass through so quick keyboard up→down
+            // still works. Outside the window, any delta passes.
+            //
+            // Constants tuned empirically:
+            //   FILTER_WINDOW_MS = 500 — covers the typical ~250 ms gap
+            //     between Android's start and end events with margin.
+            //   FILTER_DELTA_PX  = 80  — bigger than typical suggestion-
+            //     bar height (40–60 px) but smaller than a typical
+            //     keyboard slide (~250–350 px), so dismissals always
+            //     pass and only the settle-noise gets filtered.
+            const FILTER_WINDOW_MS = 500;
+            const FILTER_DELTA_PX = 80;
+            let lastSnapAt = 0;
             function applyViewport() {{
-                root.style.setProperty('--keyboard-height', readViewportKh() + 'px');
+                const now = performance.now();
+                const newKh = readViewportKh();
+                const currentStr = getComputedStyle(root).getPropertyValue('--keyboard-height').trim();
+                const currentKh = parseFloat(currentStr) || 0;
+                const delta = Math.abs(newKh - currentKh);
+                if (now - lastSnapAt < FILTER_WINDOW_MS && delta > 0 && delta < FILTER_DELTA_PX) {{
+                    // Settle-noise: skip. Panel stays at the first-event
+                    // position (off by < 80 px from the "true" final
+                    // value, but imperceptible).
+                    return;
+                }}
+                root.style.setProperty('--keyboard-height', newKh + 'px');
                 updateBottomPanelVar();
+                lastSnapAt = now;
             }}
             function onViewportChange() {{ applyViewport(); }}
 
