@@ -390,11 +390,14 @@ async def index():
             right: 0;
             bottom: 20vh;
             min-height: 0;
-            /* Iframe slides up in lockstep with the keyboard so its bottom
-               rows (recent claude output) stay visible. translateZ keeps it
-               on the compositor; contain isolates paint. Iframe SIZE doesn't
-               change — xterm.js never re-fits. The translate is JS-animated
-               via --keyboard-height so it's one smooth slide, not snaps. */
+            /* Iframe shifts up by --keyboard-height so its bottom rows stay
+               visible above the keyboard. translate3d keeps it on the
+               compositor; contain isolates paint. Iframe SIZE doesn't change
+               — xterm.js never re-fits. setupViewport snaps --keyboard-height
+               (no JS animation) so this transform jumps in one frame when
+               the keyboard event fires — see .bottom-panel rule for the
+               "why no transition" rationale (avoids bounce on multi-event
+               Android slides). */
             transform: translate3d(0, calc(-1 * var(--keyboard-height, 0px)), 0);
             contain: layout paint;
         }}
@@ -405,14 +408,12 @@ async def index():
             bottom: var(--keyboard-height, 0px);
             background: #1a1a1a;
             z-index: 20;
-            /* No CSS transition — the rAF poll in setupViewport drives per-
-               frame updates of --keyboard-height during the keyboard animation
-               (Android Chrome fires visualViewport.resize only at start + end,
-               but .height itself updates smoothly). The panel snaps to each
-               rAF tick = tracks the keyboard frame-by-frame. Adding a CSS
-               transition on top would cause the panel to lag behind the rAF
-               updates (each frame's snap starts a new transition mid-flight,
-               panel never catches up). */
+            /* No CSS transition. setupViewport snaps --keyboard-height
+               directly on visualViewport.resize (no interpolation), so any
+               transition here would cause a "bounce" when a second event
+               fires with a smaller height (e.g., Gboard suggestion bar
+               settling). The panel jumps in one frame to whatever Android
+               last reported. */
         }}
         .terminal-frame {{
             border: none;
@@ -1901,60 +1902,34 @@ async def index():
                 }}
             }}
 
-            // JS-driven smooth interpolation of --keyboard-height. Why not
-            // CSS transition: Android Chrome fires visualViewport.resize only
-            // at the START and END of the keyboard slide (2 snaps, ~250ms
-            // apart). With a CSS transition, the path interpolated by the
-            // browser doesn't match the keyboard's actual animation curve —
-            // particularly visible on dismiss, where the panel keeps sliding
-            // after the keyboard's already gone. Why not rAF-poll the live
-            // visualViewport.height: that value also only updates at the 2
-            // snap points (the EVENT firing IS the value changing). So
-            // polling the SDK gives the same snap-snap result.
-            // Solution: own the animation in JS. When visualViewport reports
-            // a new height target, ease-out cubic from the current animated
-            // value to the new target over 250 ms (matches iOS keyboard
-            // timing). Re-targeting mid-flight is handled cleanly by
-            // cancelling the previous rAF and starting from the current
-            // position. Both .bottom-panel (bottom) and .terminal-wrap
-            // (transform translateY) bind to --keyboard-height, so they slide
-            // together as one smooth motion.
-            let animFrameId = null;
-            let animStart = 0;
-            let animFrom = 0;
-            let animTo = 0;
-            const ANIM_DURATION_MS = 250;
-            function easeOutCubic(t) {{ return 1 - Math.pow(1 - t, 3); }}
-            function animTick() {{
-                const elapsed = performance.now() - animStart;
-                const progress = Math.min(elapsed / ANIM_DURATION_MS, 1);
-                const eased = easeOutCubic(progress);
-                const current = animFrom + (animTo - animFrom) * eased;
-                root.style.setProperty('--keyboard-height', Math.round(current) + 'px');
-                if (progress < 1) {{
-                    animFrameId = requestAnimationFrame(animTick);
-                }} else {{
-                    animFrameId = null;
-                }}
-            }}
-            function animateKeyboard(targetKh) {{
-                const currentStr = getComputedStyle(root).getPropertyValue('--keyboard-height').trim();
-                const current = parseFloat(currentStr) || 0;
-                if (Math.round(current) === targetKh && animFrameId === null) return;
-                if (animFrameId !== null) {{
-                    cancelAnimationFrame(animFrameId);
-                    animFrameId = null;
-                }}
-                animFrom = current;
-                animTo = targetKh;
-                animStart = performance.now();
-                animFrameId = requestAnimationFrame(animTick);
-            }}
-
-            function onViewportChange() {{
-                animateKeyboard(readViewportKh());
+            // No JS animation, no CSS transition on the affected properties.
+            // visualViewport.resize fires at the START and END of the
+            // keyboard slide on Android Chrome (sometimes more — Gboard's
+            // suggestion bar can fire a third event with a different height
+            // than the slide start). The previous JS rAF approach (ease-out
+            // cubic, 250 ms) would cancel + re-target on each fresh event;
+            // if the second event reported a SMALLER height than the in-
+            // flight target, the panel + iframe would animate DOWN to the
+            // new value — visible as a "bounce" with black body background
+            // exposed between the panel and the keyboard's actual top edge.
+            // John 2026-05-26: "i just don't know why the keyboard has to
+            // bounce. there is black under keyboard when it bounces and then
+            // it comes back down.. why can't it just go up until it stops
+            // instead of coming back down. makes me dizzy."
+            // Fix: snap --keyboard-height directly on each event. No
+            // interpolation window = no possibility of in-flight cancellation
+            // + reverse direction = no bounce. Trade-off: each event is now
+            // a single-frame jump rather than a 250 ms ease-out, so there's
+            // less "smooth motion" — but the motion was the source of the
+            // perceived bounce, so killing it eliminates the dizziness.
+            // The .bottom-panel and .terminal-wrap remain bound to
+            // --keyboard-height via `bottom` / `transform: translate3d`;
+            // they paint at the new position the moment the variable updates.
+            function applyViewport() {{
+                root.style.setProperty('--keyboard-height', readViewportKh() + 'px');
                 updateBottomPanelVar();
             }}
+            function onViewportChange() {{ applyViewport(); }}
 
             if (window.visualViewport) {{
                 window.visualViewport.addEventListener('resize', onViewportChange);
