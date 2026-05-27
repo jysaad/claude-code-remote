@@ -689,19 +689,21 @@ async def index():
         .new-terminal-btn:active {{ background: #1a1a1a; }}
         .drawer-settings-btn {{
             margin: 0 16px 12px;
-            padding: 10px 12px;
-            background: transparent;
-            color: #888;
-            border: 1px solid #333;
+            padding: 12px;
+            background: #2d2d2d;
+            color: #cfcfcf;
+            border: 1px solid #444;
             border-radius: 8px;
-            font-size: 13px;
+            font-weight: 600;
+            font-size: 14px;
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 8px;
             cursor: pointer;
         }}
-        .drawer-settings-btn:active {{ background: #1a1a1a; color: #ccc; }}
-        .drawer-settings-btn .gear {{ font-size: 14px; }}
+        .drawer-settings-btn:active {{ background: #1a1a1a; }}
+        .drawer-settings-btn .gear {{ font-size: 15px; }}
         .session-list {{
             flex: 1;
             overflow-y: auto;
@@ -823,21 +825,29 @@ async def index():
             border-radius: 12px 12px 0 0;
             z-index: 300;
             transform: translateY(110%);
-            /* No `bottom` transition: --keyboard-height is rAF-rewritten every
-               frame during the keyboard slide; a CSS bottom transition would
-               re-target each frame and leak sub-pixel compositor work that
-               flashed the sheet during focus. Same fix .bottom-panel got
-               2026-05-26 (rAF-driven keyboard tracking). */
-            transition: transform 0.22s ease;
             display: flex;
             flex-direction: column;
-            /* Closed sheet can't receive any pointer events, so a transient
-               mispaint never becomes a tap surface. */
             pointer-events: none;
+            /* visibility: hidden while closed = zero paint, no flash during
+               the keyboard slide. The 0.22s linear delay on visibility means
+               the sheet only goes hidden AFTER the slide-down animation
+               finishes (on close). On open, the override on .open sets the
+               delay to 0s so visibility flips visible immediately. The
+               removed `transition: bottom` (and bound-to-keyboard-height
+               translateY's interaction with the rAF loop on --keyboard-height)
+               was painting a sub-pixel sliver of the sheet during the
+               keyboard slide, brief but visible — John reported it flashing
+               on textbox focus 2026-05-27. visibility: hidden is the robust
+               fix because it removes the element from the paint pipeline
+               entirely. */
+            visibility: hidden;
+            transition: transform 0.22s ease, visibility 0s linear 0.22s;
         }}
         .skills-sheet.open {{
             transform: translateY(0);
             pointer-events: auto;
+            visibility: visible;
+            transition: transform 0.22s ease, visibility 0s linear 0s;
         }}
         /* Settings sheet — same shape as skills-sheet, also bound to
            --keyboard-height with NO bottom transition (rAF-driven, see
@@ -866,14 +876,18 @@ async def index():
             border-radius: 12px 12px 0 0;
             z-index: 300;
             transform: translateY(110%);
-            transition: transform 0.22s ease;
             display: flex;
             flex-direction: column;
             pointer-events: none;
+            /* Same visibility trick as .skills-sheet — see comment there. */
+            visibility: hidden;
+            transition: transform 0.22s ease, visibility 0s linear 0.22s;
         }}
         .settings-sheet.open {{
             transform: translateY(0);
             pointer-events: auto;
+            visibility: visible;
+            transition: transform 0.22s ease, visibility 0s linear 0s;
         }}
         .settings-header {{
             display: flex;
@@ -1022,8 +1036,7 @@ async def index():
             <div class="status-bar" id="statusBar"></div>
             <div class="quick-keys">
                 <button onclick="sendKey('Escape')">Esc</button>
-                <button id="scrollBtn" title="Scroll up (enter scroll mode; never interrupts Claude)">&#9195;</button>
-                <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
+                <button id="scrollBtn" title="Unlock swipe-scroll (no jump; never interrupts Claude)">&#9195;</button>
                 <button id="slashBtn" title="Tap: /  ·  Long-press: all skills">/</button>
                 <button onclick="sendKey('Up')">&#9650;</button>
                 <button onclick="sendKey('Down')">&#9660;</button>
