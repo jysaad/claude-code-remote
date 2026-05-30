@@ -125,12 +125,12 @@ def render_statusline_html() -> str:
     # synthetic one ("phone-sidecar") makes statusline.sh render a bogus
     # underlined "Anon" entry in the Sessions row. Empty self_id skips the
     # name_part composition cleanly.
-    model_name = active_model_display_name() or "Phone"
+    model_name, effort_level = active_model_and_effort()
     payload = json.dumps({
         "session_id": "",
         "version": "phone",
-        "model": {"display_name": model_name},
-        "effort": {"level": ""},
+        "model": {"display_name": model_name or "Phone"},
+        "effort": {"level": effort_level},
         "cwd": str(Path.home()),
     })
     try:
@@ -313,29 +313,31 @@ def _model_display_from_id(model_id: str) -> str:
     return model_id
 
 
-def active_model_display_name() -> str:
-    """Display name of the model the currently-active phone tmux window's CC
-    session is using, read from the tail of its transcript (last assistant
-    message's model id). Returns "" if it can't be resolved so the caller can
-    fall back to "Phone". Tail-read (64KB) keeps this cheap on every poll."""
+def _active_window_sid():
+    """sessionId of the currently-active phone tmux window, or None."""
     try:
         r = subprocess.run(
             [TMUX, "list-windows", "-t", TMUX_SESSION,
              "-F", "#{window_name}|#{window_active}"],
             capture_output=True, text=True, timeout=3,
         )
-        active_name = ""
         for line in r.stdout.splitlines():
             nm, _, act = line.rpartition("|")
             if act == "1":
-                active_name = nm
-                break
-        if not active_name:
-            return ""
-        sid, _ = find_cc_session_for_window(active_name)
-        tpath = find_transcript_path(sid)
-        if not tpath:
-            return ""
+                sid, _ = find_cc_session_for_window(nm)
+                return sid
+    except Exception:
+        pass
+    return None
+
+
+def _model_from_transcript(sid: str) -> str:
+    """Fallback model display name from the transcript tail when the phone
+    cache is absent. Effort is not recoverable this way (transcripts omit it)."""
+    tpath = find_transcript_path(sid)
+    if not tpath:
+        return ""
+    try:
         with open(tpath, "rb") as fh:
             fh.seek(0, 2)
             size = fh.tell()
@@ -343,8 +345,34 @@ def active_model_display_name() -> str:
             tail = fh.read().decode("utf-8", "ignore")
         ids = re.findall(r'"model":"(claude-[^"]+)"', tail)
         return _model_display_from_id(ids[-1]) if ids else ""
-    except Exception:
+    except OSError:
         return ""
+
+
+def active_model_and_effort():
+    """(model_display, effort_level) for the active phone session.
+
+    Primary source: /tmp/.statusline-phone-<sid>, written by statusline.sh on
+    the REAL session's render — authoritative, exactly what CC reports (model
+    already stripped of its " (1M context)" suffix; tab-separated model\\teffort).
+    Falls back to the transcript for the model id when the cache is absent;
+    effort has no fallback. Returns ("", "") when nothing resolves so the caller
+    substitutes "Phone" for the model."""
+    sid = _active_window_sid()
+    if not sid:
+        return "", ""
+    model, effort = "", ""
+    cache = Path(f"/tmp/.statusline-phone-{sid}")
+    try:
+        if cache.exists():
+            parts = cache.read_text().split("\t")
+            model = parts[0].strip() if parts else ""
+            effort = parts[1].strip() if len(parts) > 1 else ""
+    except OSError:
+        pass
+    if not model:
+        model = _model_from_transcript(sid)
+    return model, effort
 
 
 def wrap_up_closed_session(transcript_path: Path, sid: str):
