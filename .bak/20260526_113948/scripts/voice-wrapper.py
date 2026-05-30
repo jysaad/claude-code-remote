@@ -125,11 +125,10 @@ def render_statusline_html() -> str:
     # synthetic one ("phone-sidecar") makes statusline.sh render a bogus
     # underlined "Anon" entry in the Sessions row. Empty self_id skips the
     # name_part composition cleanly.
-    model_name = active_model_display_name() or "Phone"
     payload = json.dumps({
         "session_id": "",
         "version": "phone",
-        "model": {"display_name": model_name},
+        "model": {"display_name": "Phone"},
         "effort": {"level": ""},
         "cwd": str(Path.home()),
     })
@@ -289,64 +288,6 @@ def find_cwd_for_session(sid: str):
     return None
 
 
-# Map model IDs (as recorded in transcripts) → the compact display names
-# statusline.sh renders. Fallback chain: exact id → prettified id → "" (caller
-# substitutes "Phone").
-MODEL_DISPLAY_NAMES = {
-    "claude-opus-4-8": "Opus 4.8",
-    "claude-opus-4-7": "Opus 4.7",
-    "claude-opus-4-6": "Opus 4.6",
-    "claude-sonnet-4-6": "Sonnet 4.6",
-    "claude-sonnet-4-5": "Sonnet 4.5",
-    "claude-haiku-4-5": "Haiku 4.5",
-}
-
-
-def _model_display_from_id(model_id: str) -> str:
-    if not model_id:
-        return ""
-    if model_id in MODEL_DISPLAY_NAMES:
-        return MODEL_DISPLAY_NAMES[model_id]
-    m = re.match(r"claude-(opus|sonnet|haiku)-(\d+)-(\d+)", model_id)
-    if m:
-        return f"{m.group(1).capitalize()} {m.group(2)}.{m.group(3)}"
-    return model_id
-
-
-def active_model_display_name() -> str:
-    """Display name of the model the currently-active phone tmux window's CC
-    session is using, read from the tail of its transcript (last assistant
-    message's model id). Returns "" if it can't be resolved so the caller can
-    fall back to "Phone". Tail-read (64KB) keeps this cheap on every poll."""
-    try:
-        r = subprocess.run(
-            [TMUX, "list-windows", "-t", TMUX_SESSION,
-             "-F", "#{window_name}|#{window_active}"],
-            capture_output=True, text=True, timeout=3,
-        )
-        active_name = ""
-        for line in r.stdout.splitlines():
-            nm, _, act = line.rpartition("|")
-            if act == "1":
-                active_name = nm
-                break
-        if not active_name:
-            return ""
-        sid, _ = find_cc_session_for_window(active_name)
-        tpath = find_transcript_path(sid)
-        if not tpath:
-            return ""
-        with open(tpath, "rb") as fh:
-            fh.seek(0, 2)
-            size = fh.tell()
-            fh.seek(max(0, size - 65536))
-            tail = fh.read().decode("utf-8", "ignore")
-        ids = re.findall(r'"model":"(claude-[^"]+)"', tail)
-        return _model_display_from_id(ids[-1]) if ids else ""
-    except Exception:
-        return ""
-
-
 def wrap_up_closed_session(transcript_path: Path, sid: str):
     """Phone close = explicit wrap-up. Pipe the transcript into
     ~/Context/scripts/session-end-journal.sh, which summarizes into today's
@@ -447,18 +388,8 @@ async def index():
             top: 0;
             left: 0;
             right: 0;
-            bottom: 20vh;
+            bottom: var(--bottom-panel-height, 110px);
             min-height: 0;
-            /* Iframe shifts up by --keyboard-height so its bottom rows stay
-               visible above the keyboard. translate3d keeps it on the
-               compositor; contain isolates paint. Iframe SIZE doesn't change
-               — xterm.js never re-fits. setupViewport snaps --keyboard-height
-               (no JS animation) so this transform jumps in one frame when
-               the keyboard event fires — see .bottom-panel rule for the
-               "why no transition" rationale (avoids bounce on multi-event
-               Android slides). */
-            transform: translate3d(0, calc(-1 * var(--keyboard-height, 0px)), 0);
-            contain: layout paint;
         }}
         .bottom-panel {{
             position: fixed;
@@ -467,12 +398,7 @@ async def index():
             bottom: var(--keyboard-height, 0px);
             background: #1a1a1a;
             z-index: 20;
-            /* No CSS transition. setupViewport snaps --keyboard-height
-               directly on visualViewport.resize (no interpolation), so any
-               transition here would cause a "bounce" when a second event
-               fires with a smaller height (e.g., Gboard suggestion bar
-               settling). The panel jumps in one frame to whatever Android
-               last reported. */
+            transition: bottom 0.15s ease-out;
         }}
         .terminal-frame {{
             border: none;
@@ -524,16 +450,16 @@ async def index():
         }}
         .scroll-hint.visible {{ opacity: 1; }}
         .status-bar {{
-            padding: 4px 8px;
+            padding: 6px 8px;
             background: #1c1c1c;
             color: #d0d0d0;
             font-family: 'Menlo', monospace;
-            font-size: 11px;
-            line-height: 1.4;
+            font-size: 12px;
+            line-height: 1.5;
             border-top: 1px solid #2a2a2a;
             white-space: pre-wrap;
             word-break: break-word;
-            max-height: 64px;
+            max-height: 120px;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
         }}
@@ -541,14 +467,14 @@ async def index():
         .quick-keys {{
             display: flex;
             gap: 4px;
-            padding: 3px 6px;
+            padding: 4px 6px;
             background: #252525;
             overflow-x: auto;
             -webkit-overflow-scrolling: touch;
         }}
         .quick-keys button {{
-            padding: 6px 12px;
-            font-size: 13px;
+            padding: 8px 14px;
+            font-size: 14px;
             font-family: 'Menlo', monospace;
             border: 1px solid #555;
             border-radius: 4px;
@@ -564,13 +490,13 @@ async def index():
         .input-bar {{
             display: flex;
             gap: 6px;
-            padding: 4px 6px;
+            padding: 6px;
             background: #2d2d2d;
             border-top: 1px solid #444;
         }}
         .input-bar textarea {{
             flex: 1;
-            padding: 8px 10px;
+            padding: 10px 12px;
             font-size: 16px;
             border: 1px solid #555;
             border-radius: 8px;
@@ -579,8 +505,8 @@ async def index():
             outline: none;
             resize: none;
             overflow-y: hidden;
-            min-height: 38px;
-            max-height: 80px;
+            min-height: 42px;
+            max-height: 100px;
             line-height: 1.4;
             font-family: -apple-system, system-ui, sans-serif;
         }}
@@ -734,36 +660,6 @@ async def index():
             cursor: pointer;
         }}
         .new-session-btn:active {{ background: #005bb5; }}
-        .new-terminal-btn {{
-            margin: 6px 16px 12px;
-            padding: 12px;
-            background: #2d2d2d;
-            color: #cfcfcf;
-            border: 1px solid #444;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            font-family: Menlo, monospace;
-            cursor: pointer;
-        }}
-        .new-terminal-btn:active {{ background: #1a1a1a; }}
-        .drawer-settings-btn {{
-            margin: 0 16px 12px;
-            padding: 12px;
-            background: #2d2d2d;
-            color: #cfcfcf;
-            border: 1px solid #444;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            cursor: pointer;
-        }}
-        .drawer-settings-btn:active {{ background: #1a1a1a; }}
-        .drawer-settings-btn .gear {{ font-size: 15px; }}
         .session-list {{
             flex: 1;
             overflow-y: auto;
@@ -785,6 +681,16 @@ async def index():
         .session-row .row-main {{
             display: flex;
             align-items: center;
+        }}
+        .session-row .row-preview {{
+            margin-top: 4px;
+            color: #888;
+            font-size: 11px;
+            font-family: Menlo, monospace;
+            line-height: 1.3;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }}
         .session-row.active {{
             background: #143a5e;
@@ -810,7 +716,7 @@ async def index():
         .session-row .row-close:active {{ color: #f55; }}
         .session-row .ready-dot,
         .menu-btn .ready-dot {{
-            color: #34c759;
+            color: #ff4040;
             font-size: 12px;
             margin-right: 10px;
             line-height: 1;
@@ -885,130 +791,11 @@ async def index():
             border-radius: 12px 12px 0 0;
             z-index: 300;
             transform: translateY(110%);
+            transition: transform 0.22s ease, bottom 0.15s ease-out;
             display: flex;
             flex-direction: column;
-            pointer-events: none;
-            /* visibility: hidden while closed = zero paint, no flash during
-               the keyboard slide. The 0.22s linear delay on visibility means
-               the sheet only goes hidden AFTER the slide-down animation
-               finishes (on close). On open, the override on .open sets the
-               delay to 0s so visibility flips visible immediately. The
-               removed `transition: bottom` (and bound-to-keyboard-height
-               translateY's interaction with the rAF loop on --keyboard-height)
-               was painting a sub-pixel sliver of the sheet during the
-               keyboard slide, brief but visible — John reported it flashing
-               on textbox focus 2026-05-27. visibility: hidden is the robust
-               fix because it removes the element from the paint pipeline
-               entirely. */
-            visibility: hidden;
-            transition: transform 0.22s ease, visibility 0s linear 0.22s;
         }}
-        .skills-sheet.open {{
-            transform: translateY(0);
-            pointer-events: auto;
-            visibility: visible;
-            transition: transform 0.22s ease, visibility 0s linear 0s;
-        }}
-        /* Settings sheet — same shape as skills-sheet, also bound to
-           --keyboard-height with NO bottom transition (rAF-driven, see
-           skills-sheet rule for the why). */
-        .settings-backdrop {{
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.4);
-            z-index: 290;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.18s ease;
-        }}
-        .settings-backdrop.active {{
-            opacity: 1;
-            pointer-events: auto;
-        }}
-        .settings-sheet {{
-            position: fixed;
-            left: 0;
-            right: 0;
-            bottom: var(--keyboard-height, 0px);
-            max-height: 70vh;
-            background: #1f1f1f;
-            border-top: 1px solid #444;
-            border-radius: 12px 12px 0 0;
-            z-index: 300;
-            transform: translateY(110%);
-            display: flex;
-            flex-direction: column;
-            pointer-events: none;
-            /* Same visibility trick as .skills-sheet — see comment there. */
-            visibility: hidden;
-            transition: transform 0.22s ease, visibility 0s linear 0.22s;
-        }}
-        .settings-sheet.open {{
-            transform: translateY(0);
-            pointer-events: auto;
-            visibility: visible;
-            transition: transform 0.22s ease, visibility 0s linear 0s;
-        }}
-        .settings-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 14px 16px;
-            border-bottom: 1px solid #333;
-            color: #fff;
-            font-weight: 600;
-            font-size: 15px;
-        }}
-        .settings-header .close-x {{
-            background: none;
-            border: none;
-            color: #888;
-            font-size: 24px;
-            line-height: 1;
-            cursor: pointer;
-            padding: 0 4px;
-        }}
-        .settings-body {{
-            padding: 18px 20px 28px;
-            overflow-y: auto;
-        }}
-        .settings-row {{ margin-bottom: 24px; }}
-        .settings-row:last-child {{ margin-bottom: 0; }}
-        .settings-label {{
-            display: flex;
-            justify-content: space-between;
-            align-items: baseline;
-            margin-bottom: 10px;
-        }}
-        .settings-label .label-text {{
-            font-weight: 600;
-            color: #fff;
-            font-size: 14px;
-        }}
-        .settings-label .label-value {{
-            color: #aaa;
-            font-size: 12px;
-            font-variant-numeric: tabular-nums;
-        }}
-        .settings-slider {{
-            width: 100%;
-            accent-color: #007aff;
-            margin: 0;
-            height: 28px;
-        }}
-        .settings-ends {{
-            display: flex;
-            justify-content: space-between;
-            margin-top: 4px;
-            color: #777;
-            font-size: 11px;
-        }}
-        .settings-hint {{
-            margin-top: 12px;
-            color: #888;
-            font-size: 12px;
-            line-height: 1.4;
-        }}
+        .skills-sheet.open {{ transform: translateY(0); }}
         .skills-header {{
             display: flex;
             justify-content: space-between;
@@ -1079,11 +866,6 @@ async def index():
         <div class="session-list" id="sessionList">
             <div class="empty">Loading…</div>
         </div>
-        <button class="new-terminal-btn" onclick="promptNewTerminal()">&gt;_ New terminal</button>
-        <button class="drawer-settings-btn" onclick="openSettingsSheet()">
-            <span class="gear">&#9881;</span>
-            <span>Settings</span>
-        </button>
     </div>
     <div class="container">
         <div class="terminal-wrap">
@@ -1096,11 +878,11 @@ async def index():
             <div class="status-bar" id="statusBar"></div>
             <div class="quick-keys">
                 <button onclick="sendKey('Escape')">Esc</button>
-                <button id="scrollBtn" title="Unlock swipe-scroll (no jump; never interrupts Claude)">&#9195;</button>
+                <button id="scrollBtn" title="Scroll up (enter scroll mode; never interrupts Claude)">&#9195;</button>
+                <button onclick="reconnectAll()" title="Reconnect terminal">&#8635;</button>
                 <button id="slashBtn" title="Tap: /  ·  Long-press: all skills">/</button>
                 <button onclick="sendKey('Up')">&#9650;</button>
                 <button onclick="sendKey('Down')">&#9660;</button>
-                <button onclick="sendKey('Right')">&#9654;</button>
                 <button onclick="sendKey('Tab')">Tab</button>
                 <button onclick="sendKey('C-u')">Del</button>
                 <button onclick="copyPane()" title="Copy pane text">&#128203;</button>
@@ -1137,28 +919,6 @@ async def index():
             <div class="skills-empty">Loading…</div>
         </div>
     </div>
-    <div class="settings-backdrop" id="settingsBackdrop" onclick="closeSettingsSheet()"></div>
-    <div class="settings-sheet" id="settingsSheet">
-        <div class="settings-header">
-            <span>Settings</span>
-            <button class="close-x" onclick="closeSettingsSheet()">&times;</button>
-        </div>
-        <div class="settings-body">
-            <div class="settings-row">
-                <div class="settings-label">
-                    <span class="label-text">Scroll sensitivity</span>
-                    <span class="label-value" id="sensValue">14 px/line</span>
-                </div>
-                <input type="range" id="sensSlider" class="settings-slider"
-                       min="5" max="28" step="1" value="14">
-                <div class="settings-ends">
-                    <span>Fast</span>
-                    <span>Precise</span>
-                </div>
-                <div class="settings-hint">Controls how much finger movement is one scroll-line. Lower = a small swipe moves many lines (fast). Higher = each line needs more swipe (precise).</div>
-            </div>
-        </div>
-    </div>
     <div class="copy-overlay" id="copyOverlay">
         <div class="copy-hint">Scroll to read · long-press to select, then Copy</div>
         <pre id="copyText" class="copy-content"></pre>
@@ -1167,16 +927,6 @@ async def index():
     <script>
         const input = document.getElementById('cmd');
         const UPLOAD_DIR = '/tmp/claude-uploads/';
-
-        // Scroll sensitivity (Settings sheet). Script-scope `let` so the slider
-        // can mutate it live without reloading. Read by setupScrollOverlay
-        // (both touch swipe and wheel paths) via closure. Persisted in
-        // localStorage; loaded on init at the bottom of the script.
-        let PIXELS_PER_LINE = 14;
-        const SENS_KEY = 'phoneOS.scrollSensitivity';
-        const SENS_MIN = 5;
-        const SENS_MAX = 28;
-        const SENS_DEFAULT = 14;
 
         // Track typing activity so reconnectDebounced can suppress iframe
         // reloads while the user is composing. Reload mid-typing steals focus
@@ -1279,9 +1029,8 @@ async def index():
 
         // Context-aware scroll button. State synced from /tmux/windows
         // (in_copy_mode). NEVER interrupts Claude under any state.
-        //   not-in-copy-mode → ⏫  tap = enter copy mode ONLY (unlock swipe).
-        //                          User then drags at their own pace.
-        //   in-copy-mode     → ⏬  tap = exit copy mode (snap back to live)
+        //   not-in-copy-mode → ⏫  tap = enter copy mode + page up
+        //   in-copy-mode     → ⏬  tap = exit copy mode (back to live)
         // The Esc button (separate, leftmost) keeps its own gated
         // behavior; this button is the no-mental-load scroll surface
         // for users who don't trust the Esc gating in the heat of work.
@@ -1294,7 +1043,7 @@ async def index():
                 btn.title = 'Exit scroll mode (back to live, never interrupts Claude)';
             }} else {{
                 btn.innerHTML = '&#9195;';  // ⏫
-                btn.title = 'Unlock swipe-scroll (no jump; never interrupts Claude)';
+                btn.title = 'Scroll up (enter scroll mode; never interrupts Claude)';
             }}
         }}
         async function toggleScroll() {{
@@ -1309,15 +1058,15 @@ async def index():
                 try {{ await fetch('/scroll/exit', {{ method: 'POST' }}); }}
                 catch (err) {{ /* silent */ }}
             }} else {{
-                // /scroll/enter just puts tmux in copy-mode (no page-up).
-                // The swipe-scroll path at the overlay touchmove handler is
-                // gated on inCopyMode and is now the only way to actually
-                // move the buffer — finger control, no surprise jumps.
-                try {{ await fetch('/scroll/enter', {{ method: 'POST' }}); }}
-                catch (err) {{ /* silent */ }}
+                try {{
+                    await fetch('/scroll', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ direction: 'up' }})
+                    }});
+                }} catch (err) {{ /* silent */ }}
             }}
-            // No input.focus() — the scroll button is a "look at terminal"
-            // gesture, not typing. Don't pop the keyboard from a scroll tap.
+            input.focus();
             // Refresh state ASAP so any server-side correction lands fast.
             setTimeout(refreshSessions, 200);
         }}
@@ -1380,15 +1129,21 @@ async def index():
                     // INCLUDING the active row. Red persists until the
                     // session goes busy again (cleared only by check_session_ready
                     // server-side, never by tap/select/view).
-                    const dot = (w.status === 'busy')
-                        ? '<span class="thinking-dot">●</span>'
-                        : '<span class="ready-dot">●</span>';
+                    const dot = (w.status === 'busy') ? '<span class="thinking-dot">●</span>'
+                        : (w.ready) ? '<span class="ready-dot">●</span>'
+                        : '';
+                    // Output preview: only shown for red (ready) sessions, so
+                    // you can triage what's waiting without entering the row.
+                    const preview = (w.ready && w.last_line)
+                        ? `<div class="row-preview">${{escapeHtml(w.last_line)}}</div>`
+                        : '';
                     row.innerHTML = `
                         <div class="row-main">
                             <span class="name">${{escapeHtml(w.name)}}</span>
                             ${{dot}}
                             <button class="row-close" data-idx="${{w.index}}" data-name="${{escapeHtml(w.name)}}">&times;</button>
                         </div>
+                        ${{preview}}
                     `;
                     let pressTimer = null;
                     let longPressFired = false;
@@ -1470,34 +1225,6 @@ async def index():
                 closeDrawer();
             }} catch (err) {{
                 console.error('new session failed:', err);
-            }}
-        }}
-
-        async function promptNewTerminal() {{
-            // Spawn a tmux window running a plain shell (NOT claude). Used
-            // for sudo / admin tasks that don't fit a Claude session. Auto-
-            // selects the new window so the user lands in it immediately.
-            try {{
-                const resp = await fetch('/tmux/new-terminal', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: '{{}}'
-                }});
-                const data = await resp.json().catch(() => ({{}}));
-                if (data.session_created) {{
-                    reloadTerminal();
-                }}
-                if (typeof data.index === 'number') {{
-                    await fetch('/tmux/select', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/json' }},
-                        body: JSON.stringify({{ index: data.index }})
-                    }});
-                }}
-                setTimeout(refreshSessions, 400);
-                closeDrawer();
-            }} catch (err) {{
-                console.error('new terminal failed:', err);
             }}
         }}
 
@@ -1765,9 +1492,7 @@ async def index():
             const overlay = document.getElementById('scrollOverlay');
             const hint = document.getElementById('scrollHint');
             if (!overlay) return;
-            // PIXELS_PER_LINE is a script-scope `let` set at the top of this
-            // script block so the Settings sheet's sensitivity slider can
-            // mutate it live without reloading. Default 14.
+            const PIXELS_PER_LINE = 14;
             const THROTTLE_MS = 40;
             const TAP_THRESHOLD_PX = 16;
             let lastY = 0;
@@ -1839,9 +1564,9 @@ async def index():
 
             overlay.addEventListener('touchend', () => {{
                 isTouching = false;
-                // Deliberately NO input.focus() here. Per John: tapping the
-                // terminal should never pop the keyboard. Only tapping the
-                // textarea itself (next to Send) brings the keyboard up.
+                if (movementMag < TAP_THRESHOLD_PX) {{
+                    input.focus();
+                }}
             }}, {{ passive: true }});
 
             overlay.addEventListener('touchcancel', () => {{
@@ -1858,9 +1583,11 @@ async def index():
                 if (lines !== 0) queue(lines);
             }}, {{ passive: false }});
 
-            // No click handler — per John, clicking/tapping the terminal
-            // must NOT pop the keyboard. The textarea is the explicit
-            // typing surface; tap it directly to focus.
+            // Click anywhere on the terminal pane → focus the textarea.
+            // Touch taps already focus via touchend above; this covers
+            // desktop mouse clicks (synthetic click fires on touch too,
+            // but input.focus() on the already-focused element is a no-op).
+            overlay.addEventListener('click', () => input.focus());
         }})();
 
         // ============================================================
@@ -1950,92 +1677,29 @@ async def index():
         (function setupViewport() {{
             const root = document.documentElement;
             const bottomPanel = document.getElementById('bottomPanel');
-
-            function readViewportKh() {{
+            function update() {{
                 const vv = window.visualViewport;
-                if (!vv) return 0;
-                // Keyboard height = layout viewport - visual viewport. Do NOT
-                // subtract vv.offsetTop — Android Chrome scrolls the layout
-                // viewport during/after keyboard transitions to keep the focus
-                // target in view, and offsetTop changes on each scroll. The
-                // subtraction conflated keyboard motion with scroll motion,
-                // making readViewportKh return shifting values that triggered
-                // extra snaps via the visualViewport.scroll listener.
-                return Math.max(0, Math.round(window.innerHeight - vv.height));
-            }}
-            function updateBottomPanelVar() {{
+                if (vv) {{
+                    const kh = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+                    root.style.setProperty('--keyboard-height', kh + 'px');
+                }}
                 if (bottomPanel) {{
                     root.style.setProperty('--bottom-panel-height', bottomPanel.offsetHeight + 'px');
                 }}
             }}
-
-            // Snap-with-secondary-event-filter.
-            //
-            // Android Chrome fires visualViewport.resize at the START and
-            // END of the keyboard slide (sometimes more — Gboard's
-            // suggestion bar settling, keyboard chrome reflow). The two
-            // events often carry slightly different target heights, so
-            // snapping naively to every event produces:
-            //   - First snap: panel jumps to event-1 position (most of
-            //     the motion).
-            //   - ~250 ms later: second snap by ~10–50 px (visible as a
-            //     small "flash + extra move" at the end of each
-            //     transition — what John reported as ruining the
-            //     experience even after the rAF animation was removed).
-            //
-            // Fix: ignore secondary events with SMALL delta within a
-            // SHORT window of the last snap. Treat them as Android's
-            // settle-up noise. Large deltas (real dismiss, keyboard
-            // re-open) always pass through so quick keyboard up→down
-            // still works. Outside the window, any delta passes.
-            //
-            // Constants tuned empirically:
-            //   FILTER_WINDOW_MS = 500 — covers the typical ~250 ms gap
-            //     between Android's start and end events with margin.
-            //   FILTER_DELTA_PX  = 80  — bigger than typical suggestion-
-            //     bar height (40–60 px) but smaller than a typical
-            //     keyboard slide (~250–350 px), so dismissals always
-            //     pass and only the settle-noise gets filtered.
-            const FILTER_WINDOW_MS = 500;
-            const FILTER_DELTA_PX = 80;
-            let lastSnapAt = 0;
-            function applyViewport() {{
-                const now = performance.now();
-                const newKh = readViewportKh();
-                const currentStr = getComputedStyle(root).getPropertyValue('--keyboard-height').trim();
-                const currentKh = parseFloat(currentStr) || 0;
-                const delta = Math.abs(newKh - currentKh);
-                if (now - lastSnapAt < FILTER_WINDOW_MS && delta > 0 && delta < FILTER_DELTA_PX) {{
-                    // Settle-noise: skip. Panel stays at the first-event
-                    // position (off by < 80 px from the "true" final
-                    // value, but imperceptible).
-                    return;
-                }}
-                root.style.setProperty('--keyboard-height', newKh + 'px');
-                updateBottomPanelVar();
-                lastSnapAt = now;
-            }}
-            function onViewportChange() {{ applyViewport(); }}
-
             if (window.visualViewport) {{
-                window.visualViewport.addEventListener('resize', onViewportChange);
-                // No 'scroll' listener: visualViewport.scroll fires during
-                // browser auto-scroll-to-keep-focus-visible, often AFTER the
-                // keyboard slide completes. Each scroll fired applyViewport
-                // again and (combined with the offsetTop subtraction that's
-                // now also gone) drove the "small move at the end" John
-                // reported. Resize is the only relevant signal for keyboard
-                // appearance/dismissal.
+                window.visualViewport.addEventListener('resize', update);
+                window.visualViewport.addEventListener('scroll', update);
             }}
-            window.addEventListener('resize', onViewportChange);
+            window.addEventListener('resize', update);
+            // Observe textarea/quick-keys/status-bar growth via the panel itself
             if (window.ResizeObserver && bottomPanel) {{
-                const ro = new ResizeObserver(updateBottomPanelVar);
+                const ro = new ResizeObserver(update);
                 ro.observe(bottomPanel);
             }}
-            // Initial sync (no animation needed at page load)
-            root.style.setProperty('--keyboard-height', readViewportKh() + 'px');
-            updateBottomPanelVar();
-            setTimeout(updateBottomPanelVar, 100);
+            // Initial + a deferred call so layout has settled
+            update();
+            setTimeout(update, 100);
         }})();
 
         // ============================================================
@@ -2139,54 +1803,6 @@ async def index():
 
             document.addEventListener('touchcancel', () => {{ reset(); }}, {{ capture: true }});
         }})();
-
-        // ============================================================
-        // Settings sheet — currently exposes Scroll sensitivity. Loaded
-        // from localStorage on init; the slider mutates PIXELS_PER_LINE
-        // live (script-scope let, used by setupScrollOverlay's swipe +
-        // wheel paths) and writes back on every change.
-        // ============================================================
-        function applySensitivity(value) {{
-            const v = Math.max(SENS_MIN, Math.min(SENS_MAX, parseInt(value) || SENS_DEFAULT));
-            PIXELS_PER_LINE = v;
-            const valueEl = document.getElementById('sensValue');
-            if (valueEl) valueEl.textContent = v + ' px/line';
-            try {{ localStorage.setItem(SENS_KEY, String(v)); }} catch (e) {{ /* private mode */ }}
-        }}
-        function loadSensitivity() {{
-            let stored = SENS_DEFAULT;
-            try {{
-                const raw = localStorage.getItem(SENS_KEY);
-                const parsed = parseInt(raw);
-                if (!isNaN(parsed) && parsed >= SENS_MIN && parsed <= SENS_MAX) stored = parsed;
-            }} catch (e) {{ /* private mode */ }}
-            PIXELS_PER_LINE = stored;
-            const slider = document.getElementById('sensSlider');
-            if (slider) slider.value = stored;
-            const valueEl = document.getElementById('sensValue');
-            if (valueEl) valueEl.textContent = stored + ' px/line';
-        }}
-        function openSettingsSheet() {{
-            // Sync slider to current value (in case storage changed externally
-            // or this is the first open).
-            const slider = document.getElementById('sensSlider');
-            if (slider) slider.value = PIXELS_PER_LINE;
-            const valueEl = document.getElementById('sensValue');
-            if (valueEl) valueEl.textContent = PIXELS_PER_LINE + ' px/line';
-            // Close the drawer if it's open — the settings sheet is a
-            // foreground action, not a drawer subview.
-            closeDrawer();
-            document.getElementById('settingsBackdrop').classList.add('active');
-            document.getElementById('settingsSheet').classList.add('open');
-        }}
-        function closeSettingsSheet() {{
-            document.getElementById('settingsSheet').classList.remove('open');
-            document.getElementById('settingsBackdrop').classList.remove('active');
-        }}
-        document.getElementById('sensSlider')?.addEventListener('input', (e) => {{
-            applySensitivity(e.target.value);
-        }});
-        loadSensitivity();
 
         input.focus();
     </script>
@@ -2317,21 +1933,6 @@ async def scroll_exit():
     safe alternative to the gated /key Escape handler when the only intent is
     to stop scrolling. No-op when not in copy mode."""
     _exit_copy_mode()
-    return {"status": "ok"}
-
-
-@app.post("/scroll/enter")
-async def scroll_enter():
-    """Enter tmux copy mode without scrolling. Unlocks the swipe-scroll path
-    (gated client-side on inCopyMode) so the user can drag at their own pace,
-    instead of the previous behavior which jumped a full page on every ⏫ tap.
-    Pairs with /scroll/exit. Idempotent — tmux copy-mode is a no-op if already
-    in copy mode."""
-    subprocess.run(
-        [TMUX, "copy-mode", "-t", TMUX_SESSION],
-        capture_output=True,
-        timeout=5,
-    )
     return {"status": "ok"}
 
 
@@ -2506,67 +2107,10 @@ async def new_window(payload: NewWindow, background_tasks: BackgroundTasks):
             [TMUX, "new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(Path.home()), cmd],
             timeout=5,
         )
-        # Hide tmux's default green status bar — it's noise inside the phone
-        # iframe (window list + clock are already in the wrapper's drawer +
-        # sidecar). Scoped to the claude session so Mac-terminal tmux unaffected.
-        subprocess.run(
-            [TMUX, "set-option", "-t", TMUX_SESSION, "status", "off"],
-            capture_output=True, timeout=5,
-        )
     # Write the friendly name to session-overrides.json once the claude sessionId is known,
     # so the statusbar's Sessions: segment uses the same label as the drawer.
     background_tasks.add_task(label_new_session, before_pids, name)
     return {"status": "created", "name": name, "session_created": not has_session}
-
-
-@app.post("/tmux/new-terminal")
-async def new_terminal_window():
-    """Create a new tmux window running an interactive shell (NOT claude).
-    Used for the "Terminal" button in the sidebar — gives a real TTY for
-    sudo / admin tasks that don't fit a Claude session. Skips the claude
-    session-overrides bookkeeping (that's claude-only). Returns the new
-    window's index so the client can auto-select it."""
-    name = sanitize_window_name(f"term-{int(time.time()) % 10000:04d}")
-    has_session = subprocess.run(
-        [TMUX, "has-session", "-t", TMUX_SESSION],
-        capture_output=True, timeout=5,
-    ).returncode == 0
-    # No command arg => tmux uses default-shell (inherits $SHELL).
-    if has_session:
-        subprocess.run(
-            [TMUX, "new-window", "-t", f"{TMUX_SESSION}:", "-n", name],
-            timeout=5,
-        )
-    else:
-        subprocess.run(
-            [TMUX, "new-session", "-d", "-s", TMUX_SESSION, "-n", name, "-c", str(Path.home())],
-            timeout=5,
-        )
-        # Hide tmux's default green status bar (same reason as /tmux/new above).
-        subprocess.run(
-            [TMUX, "set-option", "-t", TMUX_SESSION, "status", "off"],
-            capture_output=True, timeout=5,
-        )
-    # Look up the new window's index so the client can switch to it.
-    list_result = subprocess.run(
-        [TMUX, "list-windows", "-t", TMUX_SESSION, "-F", "#{window_index}\t#{window_name}"],
-        capture_output=True, text=True, timeout=5,
-    )
-    new_index = None
-    for line in list_result.stdout.strip().split("\n"):
-        if "\t" in line:
-            idx_str, w_name = line.split("\t", 1)
-            if w_name == name:
-                try:
-                    new_index = int(idx_str)
-                except ValueError:
-                    pass
-    return {
-        "status": "created",
-        "name": name,
-        "session_created": not has_session,
-        "index": new_index,
-    }
 
 
 @app.post("/tmux/select")

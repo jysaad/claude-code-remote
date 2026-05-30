@@ -9,7 +9,7 @@ LOG_DIR="$PROJECT_DIR/logs"
 if [ -x "$HOME/.local/bin/remote-cli/.venv/bin/python3" ]; then
     VENV_PYTHON="$HOME/.local/bin/remote-cli/.venv/bin/python3"
 else
-    VENV_PYTHON="$HOME/Documents/Development/claude-code-remote/.venv/bin/python3"
+    VENV_PYTHON="$HOME/Workspace/Products/JohnOS/PhoneWrapper/.venv/bin/python3"
 fi
 
 mkdir -p "$LOG_DIR"
