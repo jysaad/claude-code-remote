@@ -141,6 +141,10 @@ def render_statusline_html() -> str:
         # tmux session and enter pane-width compact mode (which clips per-line at
         # tmux pane_width and ellipsizes the Sessions row mid-list).
         child_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_REMOTE_PHONE", "TMUX")}
+        # Always show the counts row on the phone bar — bypass statusline.sh's
+        # calm-by-default time gate (the gate suits the Mac terminal, not the
+        # dedicated phone sidecar where Sms/Email/Gtasks are the point).
+        child_env["STATUSLINE_FORCE_COUNTS"] = "1"
         result = subprocess.run(
             ["/bin/bash", STATUSLINE_SH],
             input=payload,
