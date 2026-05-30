@@ -302,6 +302,13 @@ MODEL_DISPLAY_NAMES = {
 }
 
 
+# Effort-level display relabels for the phone sidebar (CC's .effort.level →
+# the label John selected). "xhigh" is what CC reports when ultracode is on.
+EFFORT_DISPLAY_NAMES = {
+    "xhigh": "ultracode",
+}
+
+
 def _model_display_from_id(model_id: str) -> str:
     if not model_id:
         return ""
@@ -372,6 +379,10 @@ def active_model_and_effort():
         pass
     if not model:
         model = _model_from_transcript(sid)
+    # Display relabel: CC reports ultracode's reasoning effort as "xhigh"; show
+    # the mode name John selected instead. Phone-display only — the cache keeps
+    # the authoritative value.
+    effort = EFFORT_DISPLAY_NAMES.get(effort, effort)
     return model, effort
 
 
