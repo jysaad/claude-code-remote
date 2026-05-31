@@ -2657,25 +2657,34 @@ async def list_windows():
     return {"windows": windows, "in_copy_mode": in_copy_mode}
 
 
+# Built-in Claude Code slash commands worth surfacing in the phone skills
+# sheet even though they live in the CC binary, not ~/.claude/skills/.
+# Tapping the row fires `/effort`, which opens CC's reasoning-effort slider —
+# drivable from the phone with the Up/Down/Enter quick-keys on the bar.
+NATIVE_SLASH_COMMANDS = ["effort"]
+
+
 @app.get("/skills")
 async def list_skills():
-    """Enumerate ~/.claude/skills/ subdirectory names, alphabetized.
+    """Enumerate ~/.claude/skills/ subdirectory names plus select built-in
+    Claude Code commands (NATIVE_SLASH_COMMANDS), alphabetized.
 
     Each subdirectory is a user-defined skill (an SKILL.md plus optional
-    helpers). The phone wrapper's long-press-/ sheet displays this list
-    so John can fire any custom slash command without typing it on the
-    phone keyboard. Hidden dirs and files are excluded."""
+    helpers); the native commands are CC built-ins that have no skill dir.
+    The phone wrapper's long-press-/ sheet displays this list so John can
+    fire any slash command without typing it on the phone keyboard. Hidden
+    dirs and files are excluded."""
+    names = list(NATIVE_SLASH_COMMANDS)
     skills_dir = Path.home() / ".claude" / "skills"
-    if not skills_dir.exists() or not skills_dir.is_dir():
-        return {"skills": []}
-    try:
-        names = sorted(
-            p.name for p in skills_dir.iterdir()
-            if p.is_dir() and not p.name.startswith(".")
-        )
-    except OSError:
-        names = []
-    return {"skills": names}
+    if skills_dir.exists() and skills_dir.is_dir():
+        try:
+            names += [
+                p.name for p in skills_dir.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            ]
+        except OSError:
+            pass
+    return {"skills": sorted(set(names))}
 
 
 @app.post("/tmux/new")
