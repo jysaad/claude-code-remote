@@ -1025,6 +1025,8 @@ async def index():
             position: fixed;
             inset: 0;
             background: rgba(0,0,0,0.4);
+            -webkit-backdrop-filter: blur(3px);
+            backdrop-filter: blur(3px);
             z-index: 290;
             opacity: 0;
             pointer-events: none;
@@ -1118,27 +1120,74 @@ async def index():
             font-size: 12px;
             line-height: 1.4;
         }}
+        /* Segmented control — a unified track with a filled selected pill
+           (iOS-style). Shared by the Display, Google rows and Effort rows. */
         .settings-seg {{
             display: flex;
-            gap: 6px;
+            gap: 3px;
+            background: #1c1c1e;
+            border: 1px solid #3a3a3c;
+            border-radius: 10px;
+            padding: 3px;
         }}
         .settings-seg button {{
             flex: 1;
-            padding: 9px 0;
-            font-size: 13px;
-            font-family: -apple-system, system-ui, sans-serif;
-            border: 1px solid #555;
-            border-radius: 8px;
-            background: #2a2a2a;
-            color: #bbb;
+            padding: 8px 0;
+            font: 500 13px -apple-system, system-ui, sans-serif;
+            border: none;
+            border-radius: 7px;
+            background: transparent;
+            color: #c7c7cc;
             cursor: pointer;
+            transition: background 0.18s ease, color 0.18s ease, transform 0.08s ease;
         }}
+        .settings-seg button:active {{ transform: scale(0.96); }}
         .settings-seg button.active {{
             background: #007aff;
-            border-color: #007aff;
             color: #fff;
             font-weight: 600;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.35);
         }}
+        /* Premium grouped-list scaffolding: a drag grabber, uppercase section
+           captions, and inset rounded cards that hold related rows. */
+        .settings-grabber {{
+            width: 36px;
+            height: 5px;
+            border-radius: 3px;
+            background: #48484a;
+            margin: 8px auto 0;
+            flex: none;
+        }}
+        .settings-group-title {{
+            font: 600 11px -apple-system, system-ui, sans-serif;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: #8a8a8e;
+            margin: 0 6px 8px;
+        }}
+        .settings-group {{
+            background: #2a2a2c;
+            border-radius: 14px;
+            padding: 16px;
+            margin-bottom: 22px;
+        }}
+        .settings-group:last-child {{ margin-bottom: 0; }}
+        .settings-group .settings-row {{ margin-bottom: 20px; }}
+        .settings-group .settings-row:last-child {{ margin-bottom: 0; }}
+        /* Full-width action button (Refresh bar). */
+        .settings-action {{
+            width: 100%;
+            padding: 11px 0;
+            font: 600 14px -apple-system, system-ui, sans-serif;
+            border: none;
+            border-radius: 10px;
+            background: #007aff;
+            color: #fff;
+            cursor: pointer;
+            transition: background 0.15s ease, transform 0.08s ease;
+        }}
+        .settings-action:active {{ transform: scale(0.985); background: #0062cc; }}
+        .settings-action.busy {{ background: #3a3a3c; color: #8a8a8e; }}
         .skills-header {{
             display: flex;
             justify-content: space-between;
@@ -1269,58 +1318,79 @@ async def index():
     </div>
     <div class="settings-backdrop" id="settingsBackdrop" onclick="closeSettingsSheet()"></div>
     <div class="settings-sheet" id="settingsSheet">
+        <div class="settings-grabber"></div>
         <div class="settings-header">
             <span>Settings</span>
             <button class="close-x" onclick="closeSettingsSheet()">&times;</button>
         </div>
         <div class="settings-body">
-            <div class="settings-row">
-                <div class="settings-label">
-                    <span class="label-text">Status bar</span>
+
+            <div class="settings-group-title">Status bar</div>
+            <div class="settings-group">
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <span class="label-text">Display</span>
+                    </div>
+                    <div class="settings-seg" id="statusSeg">
+                        <button data-mode="full">Full</button>
+                        <button data-mode="compact">1-line</button>
+                        <button data-mode="off">Off</button>
+                    </div>
+                    <div class="settings-hint">Full shows all rows. 1-line collapses to a single summary line. Off hides the bar entirely.</div>
                 </div>
-                <div class="settings-seg" id="statusSeg">
-                    <button data-mode="full">Full</button>
-                    <button data-mode="compact">1-line</button>
-                    <button data-mode="off">Off</button>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <span class="label-text">Google rows</span>
+                    </div>
+                    <div class="settings-seg" id="googleRowsSeg">
+                        <button data-google="show">Show</button>
+                        <button data-google="hide">Hide</button>
+                    </div>
+                    <div class="settings-hint">Show or hide the Gcalendar and Gtasks/Email/Sms rows on this phone's bar.</div>
                 </div>
-                <div class="settings-hint">Full shows all rows. 1-line collapses to a single summary line. Off hides the bar entirely.</div>
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <span class="label-text">Refresh</span>
+                    </div>
+                    <button class="settings-action" id="refreshBarBtn" onclick="refreshBarCaches()">Refresh bar now</button>
+                    <div class="settings-hint">Pulls fresh email / sms / tasks / calendar values. New values swap in within a few seconds.</div>
+                </div>
             </div>
-            <div class="settings-row">
-                <div class="settings-label">
-                    <span class="label-text">Effort</span>
+
+            <div class="settings-group-title">Session</div>
+            <div class="settings-group">
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <span class="label-text">Effort</span>
+                    </div>
+                    <div class="settings-seg" id="effortSeg">
+                        <button data-effort="low">Low</button>
+                        <button data-effort="medium">Med</button>
+                        <button data-effort="high">High</button>
+                        <button data-effort="xhigh">X-hi</button>
+                        <button data-effort="max">Max</button>
+                    </div>
+                    <div class="settings-hint">Claude's reasoning effort for this session (sends /effort). Higher = more thinking, slower replies.</div>
                 </div>
-                <div class="settings-seg" id="effortSeg">
-                    <button data-effort="low">Low</button>
-                    <button data-effort="medium">Med</button>
-                    <button data-effort="high">High</button>
-                    <button data-effort="xhigh">X-hi</button>
-                    <button data-effort="max">Max</button>
-                </div>
-                <div class="settings-hint">Sets Claude Code's reasoning effort for this session (sends /effort). Higher = more thinking, slower replies.</div>
             </div>
-            <div class="settings-row">
-                <div class="settings-label">
-                    <span class="label-text">Google rows</span>
+
+            <div class="settings-group-title">Input</div>
+            <div class="settings-group">
+                <div class="settings-row">
+                    <div class="settings-label">
+                        <span class="label-text">Scroll sensitivity</span>
+                        <span class="label-value" id="sensValue">14 px/line</span>
+                    </div>
+                    <input type="range" id="sensSlider" class="settings-slider"
+                           min="5" max="28" step="1" value="14">
+                    <div class="settings-ends">
+                        <span>Fast</span>
+                        <span>Precise</span>
+                    </div>
+                    <div class="settings-hint">Controls how much finger movement is one scroll-line. Lower = a small swipe moves many lines (fast). Higher = each line needs more swipe (precise).</div>
                 </div>
-                <div class="settings-seg" id="googleRowsSeg">
-                    <button data-google="show">Show</button>
-                    <button data-google="hide">Hide</button>
-                </div>
-                <div class="settings-hint">Show or hide the Gcalendar and Gtasks/Email/Sms rows on this phone's bar.</div>
             </div>
-            <div class="settings-row">
-                <div class="settings-label">
-                    <span class="label-text">Scroll sensitivity</span>
-                    <span class="label-value" id="sensValue">14 px/line</span>
-                </div>
-                <input type="range" id="sensSlider" class="settings-slider"
-                       min="5" max="28" step="1" value="14">
-                <div class="settings-ends">
-                    <span>Fast</span>
-                    <span>Precise</span>
-                </div>
-                <div class="settings-hint">Controls how much finger movement is one scroll-line. Lower = a small swipe moves many lines (fast). Higher = each line needs more swipe (precise).</div>
-            </div>
+
         </div>
     </div>
     <div class="copy-overlay" id="copyOverlay">
@@ -2443,6 +2513,22 @@ async def index():
             closeSettingsSheet();
             await sendText('/effort ' + btn.dataset.effort);
         }});
+
+        // Refresh bar (Settings sheet). POSTs to /refresh-bar (server marks the
+        // statusbar caches stale — the same effect as the /refresh-bar skill,
+        // but without injecting text into the conversation), then repaints the
+        // bar a few times as the fresh values swap in over ~5s.
+        async function refreshBarCaches() {{
+            const btn = document.getElementById('refreshBarBtn');
+            if (btn) {{ btn.classList.add('busy'); btn.disabled = true; btn.textContent = 'Refreshing…'; }}
+            try {{ await fetch('/refresh-bar', {{ method: 'POST' }}); }} catch (e) {{ /* silent */ }}
+            refreshStatus();
+            setTimeout(refreshStatus, 1500);
+            setTimeout(() => {{ refreshStatus(); if (btn) btn.textContent = 'Refreshed ✓'; }}, 5000);
+            setTimeout(() => {{
+                if (btn) {{ btn.classList.remove('busy'); btn.disabled = false; btn.textContent = 'Refresh bar now'; }}
+            }}, 7000);
+        }}
         function openSettingsSheet() {{
             // Sync slider to current value (in case storage changed externally
             // or this is the first open).
@@ -2750,8 +2836,9 @@ async def list_windows():
 # Skills relocated to the Settings sheet so they don't also clutter the
 # long-press-/ slash sheet. /effort (a CC built-in, no skill dir) lives in
 # Settings as level buttons; /toggle-google's phone equivalent is the
-# Settings "Google rows" Show/Hide toggle.
-SKILLS_SHEET_EXCLUDE = {"toggle-google"}
+# Settings "Google rows" Show/Hide toggle; /refresh-bar is the Settings
+# "Refresh bar now" button (served by the POST /refresh-bar endpoint).
+SKILLS_SHEET_EXCLUDE = {"toggle-google", "refresh-bar"}
 
 
 @app.get("/skills")
@@ -2775,6 +2862,27 @@ async def list_skills():
     except OSError:
         names = []
     return {"skills": names}
+
+
+@app.post("/refresh-bar")
+async def refresh_bar():
+    """Mark the statusbar's transient caches stale so the next render's
+    refresh_if_stale fires background refreshes — the server-side equivalent of
+    the /refresh-bar skill, so the phone's Settings button never injects
+    '/refresh-bar' into the CC conversation. Touches mtime (does NOT delete),
+    so old values stay visible until the bg refresh atomically swaps in fresh
+    ones — no flicker to '?' counts or hash names. Leaves peers files alone."""
+    STALE = 946684800  # 2000-01-01; any old mtime trips the freshness check
+    tmp = Path("/tmp")
+    touched = 0
+    for pattern in (".statusline-cache-*", ".statusline-doing-*"):
+        for f in tmp.glob(pattern):
+            try:
+                os.utime(f, (STALE, STALE))
+                touched += 1
+            except OSError:
+                pass
+    return {"touched": touched}
 
 
 @app.post("/tmux/new")
