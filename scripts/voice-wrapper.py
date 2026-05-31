@@ -267,6 +267,59 @@ def check_session_ready(sid: str, curr_status: str) -> bool:
     return ready_file.exists()
 
 
+def _pid_tty_map() -> dict:
+    """Map pid -> controlling tty basename (e.g. 'ttys059') via one ps call.
+    Lets us bind a tmux window to the CC session running in it by TTY, which
+    is stable across window renames and 1:1 with the pane — unlike the
+    name-based override lookup."""
+    out = {}
+    try:
+        res = subprocess.run(
+            ["/bin/ps", "-eo", "pid=,tty="],
+            capture_output=True, text=True, timeout=5,
+        )
+        for ln in res.stdout.splitlines():
+            parts = ln.split(None, 1)
+            if len(parts) == 2:
+                out[parts[0].strip()] = parts[1].strip()
+    except (subprocess.SubprocessError, OSError):
+        pass
+    return out
+
+
+def find_cc_session_for_tty(pane_tty: str, pid_tty: dict | None = None):
+    """Return (sessionId, status) for the CC session whose process runs on
+    pane_tty. Resolves window->session by controlling TTY instead of the
+    mutable, non-unique window name.
+
+    Why this exists: the name-based find_cc_session_for_window() silently
+    returns the wrong session in two common states, both of which default
+    status to 'idle' -> GREEN dot while the session is actually thinking:
+      1. Window renamed (auto-rename loop or manual) — the override 'name'
+         drifts from the live tmux window name, so the lookup misses and
+         returns (None, None).
+      2. Two sessions ever shared a name (e.g. 'statusbar' reused across
+         sessions) — first-match-wins in dict order picks the OLDEST entry,
+         usually a dead session with no peer file -> status None -> idle.
+    A pane's #{pane_tty} ('/dev/ttysNNN') and the claude process's tty
+    ('ttysNNN', inherited through disclaim-exec) are a reliable 1:1 key.
+    Returns (None, None) if no live CC session is on that tty."""
+    if not pane_tty:
+        return None, None
+    want = pane_tty.rsplit("/", 1)[-1]  # /dev/ttys059 -> ttys059
+    if pid_tty is None:
+        pid_tty = _pid_tty_map()
+    for fp in SESSIONS_DIR.glob("*.json"):
+        try:
+            data = json.loads(fp.read_text())
+        except (json.JSONDecodeError, FileNotFoundError, OSError):
+            continue
+        pid = str(data.get("pid") or "")
+        if pid and pid_tty.get(pid) == want:
+            return data.get("sessionId"), data.get("status") or "idle"
+    return None, None
+
+
 def find_transcript_path(sid: str):
     """Find the .jsonl transcript for a Claude Code session id by globbing
     ~/.claude/projects/*/<sid>.jsonl. Returns None if not found."""
@@ -2548,20 +2601,27 @@ async def list_windows():
     sessions change every render anyway and a preview would be noise."""
     result = subprocess.run(
         [TMUX, "list-windows", "-t", TMUX_SESSION,
-         "-F", "#{window_index}|#{window_name}|#{window_active}"],
+         "-F", "#{window_index}\t#{window_name}\t#{window_active}\t#{pane_tty}"],
         capture_output=True, text=True, timeout=5,
     )
     windows = []
+    pid_tty = _pid_tty_map()  # one ps call shared across all windows this poll
     for line in result.stdout.strip().split("\n"):
         if not line:
             continue
-        parts = line.split("|", 2)
+        parts = line.split("\t")
         if len(parts) >= 3:
-            sid, status = find_cc_session_for_window(parts[1])
+            name = parts[1]
+            pane_tty = parts[3] if len(parts) >= 4 else ""
+            # Resolve the session by TTY (robust to renames + name collisions);
+            # fall back to the legacy name lookup only if the tty match misses.
+            sid, status = find_cc_session_for_tty(pane_tty, pid_tty)
+            if sid is None:
+                sid, status = find_cc_session_for_window(name)
             ready = check_session_ready(sid, status or "idle") if sid else False
             entry = {
                 "index": int(parts[0]),
-                "name": parts[1],
+                "name": name,
                 "active": parts[2] == "1",
                 "ready": ready,
                 "status": status or "idle",
