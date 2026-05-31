@@ -1287,6 +1287,29 @@ async def index():
             </div>
             <div class="settings-row">
                 <div class="settings-label">
+                    <span class="label-text">Effort</span>
+                </div>
+                <div class="settings-seg" id="effortSeg">
+                    <button data-effort="low">Low</button>
+                    <button data-effort="medium">Med</button>
+                    <button data-effort="high">High</button>
+                    <button data-effort="xhigh">X-hi</button>
+                    <button data-effort="max">Max</button>
+                </div>
+                <div class="settings-hint">Sets Claude Code's reasoning effort for this session (sends /effort). Higher = more thinking, slower replies.</div>
+            </div>
+            <div class="settings-row">
+                <div class="settings-label">
+                    <span class="label-text">Google rows</span>
+                </div>
+                <div class="settings-seg" id="googleRowsSeg">
+                    <button data-google="show">Show</button>
+                    <button data-google="hide">Hide</button>
+                </div>
+                <div class="settings-hint">Show or hide the Gcalendar and Gtasks/Email/Sms rows on this phone's bar.</div>
+            </div>
+            <div class="settings-row">
+                <div class="settings-label">
                     <span class="label-text">Scroll sensitivity</span>
                     <span class="label-value" id="sensValue">14 px/line</span>
                 </div>
@@ -1326,6 +1349,16 @@ async def index():
         const STATUS_MODES = ['full', 'compact', 'off'];
         const STATUS_MODE_DEFAULT = 'compact';
         let statusBarMode = STATUS_MODE_DEFAULT;
+
+        // Google rows visibility (Settings sheet: Show / Hide). Client-side
+        // pref persisted in localStorage. When 'hide', refreshStatus() drops
+        // the Gcalendar and Gtasks/Email/Sms rows from the bar HTML before
+        // painting (the Mac statusline always emits them for the phone via
+        // STATUSLINE_FORCE_COUNTS; this hides them sidecar-side only).
+        const GOOGLE_ROWS_KEY = 'phoneOS.googleRows';
+        const GOOGLE_ROWS_MODES = ['show', 'hide'];
+        const GOOGLE_ROWS_DEFAULT = 'show';
+        let googleRowsMode = GOOGLE_ROWS_DEFAULT;
 
         // Track typing activity so reconnectDebounced can suppress iframe
         // reloads while the user is composing. Reload mid-typing steals focus
@@ -1800,6 +1833,21 @@ async def index():
 
         // Sidecar statusbar: poll /status every 60s, render server-converted HTML.
         // Bypasses xterm.js col-truncation by rendering the bar as native HTML.
+        // Drop the Gcalendar + counts (Gtasks/Email/Sms) rows from the bar
+        // HTML when googleRowsMode === 'hide'. The bar is a <br>-joined blob,
+        // so split on <br>, strip tags per segment to test its text, and
+        // rejoin. Other rows never carry these tokens (state row = date/time/
+        // Notion; identity = host/model/CCv; sessions = Sessions:), so the
+        // match is unambiguous.
+        function filterGoogleRows(html) {{
+            if (googleRowsMode !== 'hide') return html;
+            return html.split('<br>').filter(seg => {{
+                const text = seg.replace(/<[^>]*>/g, '');
+                if (/^\\s*Gcalendar:/.test(text)) return false;
+                if (/Gtasks:|Email:|Sms:/.test(text)) return false;
+                return true;
+            }}).join('<br>');
+        }}
         async function refreshStatus() {{
             // 'Off' mode: don't poll the server at all — clear and bail.
             if (statusBarMode === 'off') {{
@@ -1811,7 +1859,7 @@ async def index():
                 const r = await fetch('/status', {{ cache: 'no-store' }});
                 const data = await r.json();
                 const bar = document.getElementById('statusBar');
-                if (bar) bar.innerHTML = data.html || '';
+                if (bar) bar.innerHTML = filterGoogleRows(data.html || '');
             }} catch (e) {{ /* silent */ }}
         }}
         refreshStatus();
@@ -2354,6 +2402,47 @@ async def index():
             const btn = e.target.closest('button[data-mode]');
             if (btn) applyStatusMode(btn.dataset.mode);
         }});
+
+        // Google rows Show/Hide (Settings sheet). Pure client-side pref; on
+        // change, repaint the bar immediately (refreshStatus re-applies the
+        // filter). Mirrors applyStatusMode's persistence shape.
+        function applyGoogleRows(mode) {{
+            if (!GOOGLE_ROWS_MODES.includes(mode)) mode = GOOGLE_ROWS_DEFAULT;
+            googleRowsMode = mode;
+            const seg = document.getElementById('googleRowsSeg');
+            if (seg) seg.querySelectorAll('button').forEach(b => {{
+                b.classList.toggle('active', b.dataset.google === mode);
+            }});
+            try {{ localStorage.setItem(GOOGLE_ROWS_KEY, mode); }} catch (e) {{ /* private mode */ }}
+            refreshStatus();
+        }}
+        function loadGoogleRows() {{
+            let stored = GOOGLE_ROWS_DEFAULT;
+            try {{
+                const raw = localStorage.getItem(GOOGLE_ROWS_KEY);
+                if (GOOGLE_ROWS_MODES.includes(raw)) stored = raw;
+            }} catch (e) {{ /* private mode */ }}
+            applyGoogleRows(stored);
+        }}
+        document.getElementById('googleRowsSeg')?.addEventListener('click', (e) => {{
+            const btn = e.target.closest('button[data-google]');
+            if (btn) applyGoogleRows(btn.dataset.google);
+        }});
+
+        // Effort level buttons (Settings sheet). Fire-and-forget: each tap
+        // sends `/effort <level>` to the session and closes the sheet. No
+        // persisted state — CC owns the real effort level; the active class
+        // is just tap feedback for the last level set from here.
+        document.getElementById('effortSeg')?.addEventListener('click', async (e) => {{
+            const btn = e.target.closest('button[data-effort]');
+            if (!btn) return;
+            const seg = document.getElementById('effortSeg');
+            if (seg) seg.querySelectorAll('button').forEach(b => {{
+                b.classList.toggle('active', b === btn);
+            }});
+            closeSettingsSheet();
+            await sendText('/effort ' + btn.dataset.effort);
+        }});
         function openSettingsSheet() {{
             // Sync slider to current value (in case storage changed externally
             // or this is the first open).
@@ -2376,6 +2465,7 @@ async def index():
         }});
         loadSensitivity();
         loadStatusMode();
+        loadGoogleRows();
 
         input.focus();
     </script>
@@ -2657,34 +2747,34 @@ async def list_windows():
     return {"windows": windows, "in_copy_mode": in_copy_mode}
 
 
-# Built-in Claude Code slash commands worth surfacing in the phone skills
-# sheet even though they live in the CC binary, not ~/.claude/skills/.
-# Tapping the row fires `/effort`, which opens CC's reasoning-effort slider —
-# drivable from the phone with the Up/Down/Enter quick-keys on the bar.
-NATIVE_SLASH_COMMANDS = ["effort"]
+# Skills relocated to the Settings sheet so they don't also clutter the
+# long-press-/ slash sheet. /effort (a CC built-in, no skill dir) lives in
+# Settings as level buttons; /toggle-google's phone equivalent is the
+# Settings "Google rows" Show/Hide toggle.
+SKILLS_SHEET_EXCLUDE = {"toggle-google"}
 
 
 @app.get("/skills")
 async def list_skills():
-    """Enumerate ~/.claude/skills/ subdirectory names plus select built-in
-    Claude Code commands (NATIVE_SLASH_COMMANDS), alphabetized.
+    """Enumerate ~/.claude/skills/ subdirectory names, alphabetized, minus any
+    in SKILLS_SHEET_EXCLUDE (relocated to the Settings sheet).
 
     Each subdirectory is a user-defined skill (an SKILL.md plus optional
-    helpers); the native commands are CC built-ins that have no skill dir.
-    The phone wrapper's long-press-/ sheet displays this list so John can
-    fire any slash command without typing it on the phone keyboard. Hidden
-    dirs and files are excluded."""
-    names = list(NATIVE_SLASH_COMMANDS)
+    helpers). The phone wrapper's long-press-/ sheet displays this list so
+    John can fire any custom slash command without typing it on the phone
+    keyboard. Hidden dirs and files are excluded."""
     skills_dir = Path.home() / ".claude" / "skills"
-    if skills_dir.exists() and skills_dir.is_dir():
-        try:
-            names += [
-                p.name for p in skills_dir.iterdir()
-                if p.is_dir() and not p.name.startswith(".")
-            ]
-        except OSError:
-            pass
-    return {"skills": sorted(set(names))}
+    if not skills_dir.exists() or not skills_dir.is_dir():
+        return {"skills": []}
+    try:
+        names = sorted(
+            p.name for p in skills_dir.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+            and p.name not in SKILLS_SHEET_EXCLUDE
+        )
+    except OSError:
+        names = []
+    return {"skills": names}
 
 
 @app.post("/tmux/new")
