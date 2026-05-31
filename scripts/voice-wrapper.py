@@ -581,6 +581,19 @@ async def index():
             -webkit-overflow-scrolling: touch;
         }}
         .status-bar:empty {{ display: none; }}
+        /* Status-bar display modes (Settings sheet: Full / 1-line / Off). The
+           bar is one innerHTML blob with \n-separated rows under white-space:
+           pre-wrap, so "1-line" is a single-visual-line clamp and "Off" hides
+           it outright. Set via JS classList on #statusBar; persisted in
+           localStorage. */
+        .status-bar.compact {{
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 1;
+            overflow: hidden;
+            max-height: 1.6em;
+        }}
+        .status-bar.off {{ display: none; }}
         .quick-keys {{
             display: flex;
             gap: 4px;
@@ -1052,6 +1065,27 @@ async def index():
             font-size: 12px;
             line-height: 1.4;
         }}
+        .settings-seg {{
+            display: flex;
+            gap: 6px;
+        }}
+        .settings-seg button {{
+            flex: 1;
+            padding: 9px 0;
+            font-size: 13px;
+            font-family: -apple-system, system-ui, sans-serif;
+            border: 1px solid #555;
+            border-radius: 8px;
+            background: #2a2a2a;
+            color: #bbb;
+            cursor: pointer;
+        }}
+        .settings-seg button.active {{
+            background: #007aff;
+            border-color: #007aff;
+            color: #fff;
+            font-weight: 600;
+        }}
         .skills-header {{
             display: flex;
             justify-content: space-between;
@@ -1189,6 +1223,17 @@ async def index():
         <div class="settings-body">
             <div class="settings-row">
                 <div class="settings-label">
+                    <span class="label-text">Status bar</span>
+                </div>
+                <div class="settings-seg" id="statusSeg">
+                    <button data-mode="full">Full</button>
+                    <button data-mode="compact">1-line</button>
+                    <button data-mode="off">Off</button>
+                </div>
+                <div class="settings-hint">Full shows all rows. 1-line collapses to a single summary line. Off hides the bar entirely.</div>
+            </div>
+            <div class="settings-row">
+                <div class="settings-label">
                     <span class="label-text">Scroll sensitivity</span>
                     <span class="label-value" id="sensValue">14 px/line</span>
                 </div>
@@ -1220,6 +1265,14 @@ async def index():
         const SENS_MIN = 5;
         const SENS_MAX = 28;
         const SENS_DEFAULT = 14;
+
+        // Status bar display mode (Settings sheet): 'full' | 'compact' | 'off'.
+        // Persisted in localStorage and applied to #statusBar as a CSS class.
+        // Defaults to 'compact' (single line) so the phone bar stays minimized.
+        const STATUS_MODE_KEY = 'phoneOS.statusBarMode';
+        const STATUS_MODES = ['full', 'compact', 'off'];
+        const STATUS_MODE_DEFAULT = 'compact';
+        let statusBarMode = STATUS_MODE_DEFAULT;
 
         // Track typing activity so reconnectDebounced can suppress iframe
         // reloads while the user is composing. Reload mid-typing steals focus
@@ -1695,6 +1748,12 @@ async def index():
         // Sidecar statusbar: poll /status every 60s, render server-converted HTML.
         // Bypasses xterm.js col-truncation by rendering the bar as native HTML.
         async function refreshStatus() {{
+            // 'Off' mode: don't poll the server at all — clear and bail.
+            if (statusBarMode === 'off') {{
+                const bar = document.getElementById('statusBar');
+                if (bar) bar.innerHTML = '';
+                return;
+            }}
             try {{
                 const r = await fetch('/status', {{ cache: 'no-store' }});
                 const data = await r.json();
@@ -2209,6 +2268,39 @@ async def index():
             const valueEl = document.getElementById('sensValue');
             if (valueEl) valueEl.textContent = stored + ' px/line';
         }}
+        // Status bar mode (Full / 1-line / Off). Toggles CSS classes on
+        // #statusBar; classes survive refreshStatus() since that only rewrites
+        // innerHTML, not classList.
+        function applyStatusMode(mode) {{
+            if (!STATUS_MODES.includes(mode)) mode = STATUS_MODE_DEFAULT;
+            statusBarMode = mode;
+            const bar = document.getElementById('statusBar');
+            if (bar) {{
+                bar.classList.remove('compact', 'off');
+                if (mode === 'compact') bar.classList.add('compact');
+                else if (mode === 'off') bar.classList.add('off');
+            }}
+            const seg = document.getElementById('statusSeg');
+            if (seg) seg.querySelectorAll('button').forEach(b => {{
+                b.classList.toggle('active', b.dataset.mode === mode);
+            }});
+            try {{ localStorage.setItem(STATUS_MODE_KEY, mode); }} catch (e) {{ /* private mode */ }}
+            // Leaving 'off' should repaint immediately rather than waiting for
+            // the next 60s tick; entering 'off' clears via refreshStatus's guard.
+            refreshStatus();
+        }}
+        function loadStatusMode() {{
+            let stored = STATUS_MODE_DEFAULT;
+            try {{
+                const raw = localStorage.getItem(STATUS_MODE_KEY);
+                if (STATUS_MODES.includes(raw)) stored = raw;
+            }} catch (e) {{ /* private mode */ }}
+            applyStatusMode(stored);
+        }}
+        document.getElementById('statusSeg')?.addEventListener('click', (e) => {{
+            const btn = e.target.closest('button[data-mode]');
+            if (btn) applyStatusMode(btn.dataset.mode);
+        }});
         function openSettingsSheet() {{
             // Sync slider to current value (in case storage changed externally
             // or this is the first open).
@@ -2230,6 +2322,7 @@ async def index():
             applySensitivity(e.target.value);
         }});
         loadSensitivity();
+        loadStatusMode();
 
         input.focus();
     </script>
